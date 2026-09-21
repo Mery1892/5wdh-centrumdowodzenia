@@ -322,9 +322,13 @@ export default function Home() {
 
   const [events, setEvents] = useState([]);
   const [eventAssignments, setEventAssignments] = useState([]);
+  const [eventSignups, setEventSignups] = useState([]);
   const [assignmentEditorEvent, setAssignmentEditorEvent] = useState(null);
   const [assignmentDraft, setAssignmentDraft] = useState({});
+  const [assignmentSignupEnabled, setAssignmentSignupEnabled] = useState(false);
+  const [assignmentSignupDeadline, setAssignmentSignupDeadline] = useState("");
   const [assignmentSaving, setAssignmentSaving] = useState(false);
+  const [signupSavingId, setSignupSavingId] = useState(null);
   const [myPatrolIds, setMyPatrolIds] = useState([]);
 
   const [tasks, setTasks] = useState([]);
@@ -410,6 +414,9 @@ export default function Home() {
     cost: "",
     paymentDeadline: "",
     responsiblePersonId: "",
+    selectedUserIds: [],
+    signupEnabled: false,
+    signupDeadline: "",
   });
 
   const [modalOpen, setModalOpen] = useState(false);
@@ -460,6 +467,29 @@ export default function Home() {
       }
     }
   }, [session, role]);
+
+  useEffect(() => {
+    if (!session?.user) return;
+
+    const channel = supabase
+      .channel(`event-signups-${session.user.id}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "event_signups",
+        },
+        () => {
+          loadEvents();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [session?.user?.id]);
 
   useEffect(() => {
     if (!taskChatTask?.id) return;
@@ -710,11 +740,12 @@ export default function Home() {
         { data: eventData, error: eventError },
         { data: membershipData },
         { data: assignmentData, error: assignmentError },
+        { data: signupData, error: signupError },
       ] = await Promise.all([
         supabase
           .from("events")
           .select(
-            "id,title,event_type,event_date,start_time,end_time,location,description,created_by,whole_troop,patrol_id,what_to_bring,cost,payment_deadline,responsible_person_id"
+            "id,title,event_type,event_date,start_time,end_time,location,description,created_by,whole_troop,patrol_id,what_to_bring,cost,payment_deadline,responsible_person_id,signup_enabled,signup_deadline"
           )
           .order("event_date")
           .order("start_time"),
@@ -727,13 +758,19 @@ export default function Home() {
         supabase
           .from("event_assignments")
           .select("id,event_id,user_id,assignment_type,note,assigned_by,created_at"),
+
+        supabase
+          .from("event_signups")
+          .select("id,event_id,user_id,status,note,admin_note,reviewed_by,reviewed_at,created_at,updated_at"),
       ]);
 
       if (eventError) throw eventError;
       if (assignmentError) throw assignmentError;
+      if (signupError) throw signupError;
 
       setEvents(eventData || []);
       setEventAssignments(assignmentData || []);
+      setEventSignups(signupData || []);
       setMyPatrolIds(
         (membershipData || []).map((item) => Number(item.patrol_id))
       );
@@ -762,6 +799,9 @@ export default function Home() {
       cost: "",
       paymentDeadline: "",
       responsiblePersonId: "",
+      selectedUserIds: [],
+      signupEnabled: false,
+      signupDeadline: "",
     });
 
     setEventModalOpen(true);
@@ -800,6 +840,14 @@ export default function Home() {
 
     if (eventForm.audience === "patrol" && !eventForm.patrolId) {
       alert("Wybierz zastęp.");
+      return;
+    }
+
+    if (
+      eventForm.audience === "selected" &&
+      eventForm.selectedUserIds.length === 0
+    ) {
+      alert("Wybierz przynajmniej jedną osobę, która jedzie.");
       return;
     }
 
@@ -862,6 +910,15 @@ export default function Home() {
             eventForm.audience === "patrol"
               ? Number(eventForm.patrolId)
               : null,
+          signup_enabled:
+            isTripType(eventForm.eventType) &&
+            Boolean(eventForm.signupEnabled),
+          signup_deadline:
+            isTripType(eventForm.eventType) &&
+            eventForm.signupEnabled &&
+            eventForm.signupDeadline
+              ? eventForm.signupDeadline
+              : null,
           what_to_bring: eventForm.bring.trim() || null,
           cost: eventForm.hasPayment
             ? eventForm.cost.trim()
@@ -879,6 +936,25 @@ export default function Home() {
       if (eventError) throw eventError;
 
       createdEventId = created.id;
+
+      if (
+        isTripType(eventForm.eventType) &&
+        eventForm.audience === "selected" &&
+        eventForm.selectedUserIds.length
+      ) {
+        const { error: assignmentError } = await supabase
+          .from("event_assignments")
+          .insert(
+            eventForm.selectedUserIds.map((userId) => ({
+              event_id: created.id,
+              user_id: userId,
+              assignment_type: "participant",
+              assigned_by: session.user.id,
+            }))
+          );
+
+        if (assignmentError) throw assignmentError;
+      }
 
       if (reservesRoom && starts.length > 0) {
         const slotsToInsert = starts.map((time) => ({
@@ -904,10 +980,20 @@ export default function Home() {
         body: `${formatDate(eventForm.date)}, ${eventForm.startTime}${
           eventForm.endTime ? `–${eventForm.endTime}` : ""
         }, ${finalLocation}`,
-        target_user_ids: targetUsersForAudience(
-          eventForm.audience,
-          eventForm.patrolId
-        ),
+        target_user_ids:
+          isTripType(eventForm.eventType) && eventForm.signupEnabled
+            ? people
+                .filter(
+                  (person) =>
+                    normalizeRole(person.role) !== "parent"
+                )
+                .map((person) => person.id)
+            : eventForm.audience === "selected"
+            ? eventForm.selectedUserIds
+            : targetUsersForAudience(
+                eventForm.audience,
+                eventForm.patrolId
+              ),
         link: isTripType(eventForm.eventType)
           ? `/?view=wyjazdy&event=${created.id}`
           : `/?view=moje&event=${created.id}`,
@@ -935,6 +1021,194 @@ export default function Home() {
       );
     } finally {
       setEventSaving(false);
+    }
+  }
+
+  function signupsForEvent(eventId) {
+    return eventSignups
+      .filter((item) => Number(item.event_id) === Number(eventId))
+      .map((item) => {
+        const person = people.find(
+          (profile) => profile.id === item.user_id
+        );
+
+        return {
+          ...item,
+          personName:
+            person?.full_name ||
+            person?.name ||
+            "Użytkownik",
+        };
+      })
+      .sort((a, b) =>
+        a.personName.localeCompare(b.personName, "pl")
+      );
+  }
+
+  function mySignupForEvent(eventId) {
+    return eventSignups.find(
+      (item) =>
+        Number(item.event_id) === Number(eventId) &&
+        item.user_id === session?.user?.id
+    );
+  }
+
+  function signupStatusLabel(status) {
+    if (status === "approved") return "ZATWIERDZONY";
+    if (status === "rejected") return "ODRZUCONY";
+    if (status === "withdrawn") return "WYCOFANY";
+    return "OCZEKUJE";
+  }
+
+  async function submitEventSignup(eventItem) {
+    if (!session?.user || !eventItem?.id) return;
+
+    setSignupSavingId(eventItem.id);
+
+    try {
+      await supabase
+        .from("event_signups")
+        .delete()
+        .eq("event_id", eventItem.id)
+        .eq("user_id", session.user.id);
+
+      const { error } = await supabase
+        .from("event_signups")
+        .insert({
+          event_id: eventItem.id,
+          user_id: session.user.id,
+          status: "pending",
+        });
+
+      if (error) throw error;
+
+      await loadEvents();
+    } catch (error) {
+      console.error("Błąd zgłoszenia na wydarzenie:", error);
+      alert(
+        `Nie udało się wysłać zgłoszenia.\n\n${
+          error?.message || ""
+        }`
+      );
+    } finally {
+      setSignupSavingId(null);
+    }
+  }
+
+  async function withdrawEventSignup(eventItem) {
+    if (!session?.user || !eventItem?.id) return;
+
+    if (!window.confirm("Wycofać swoje zgłoszenie?")) return;
+
+    setSignupSavingId(eventItem.id);
+
+    try {
+      const { error } = await supabase
+        .from("event_signups")
+        .delete()
+        .eq("event_id", eventItem.id)
+        .eq("user_id", session.user.id);
+
+      if (error) throw error;
+
+      await loadEvents();
+    } catch (error) {
+      console.error("Błąd wycofania zgłoszenia:", error);
+      alert(
+        `Nie udało się wycofać zgłoszenia.\n\n${
+          error?.message || ""
+        }`
+      );
+    } finally {
+      setSignupSavingId(null);
+    }
+  }
+
+  async function approveEventSignup(signup) {
+    const admin = await verifyAdminAccess();
+
+    if (!admin) return;
+
+    setSignupSavingId(signup.id);
+
+    try {
+      const { error: signupError } = await supabase
+        .from("event_signups")
+        .update({
+          status: "approved",
+          reviewed_by: session.user.id,
+          reviewed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", signup.id);
+
+      if (signupError) throw signupError;
+
+      const { error: assignmentError } = await supabase
+        .from("event_assignments")
+        .upsert(
+          {
+            event_id: signup.event_id,
+            user_id: signup.user_id,
+            assignment_type: "participant",
+            assigned_by: session.user.id,
+          },
+          {
+            onConflict: "event_id,user_id",
+          }
+        );
+
+      if (assignmentError) throw assignmentError;
+
+      await loadEvents();
+    } catch (error) {
+      console.error("Błąd akceptacji zgłoszenia:", error);
+      alert(
+        `Nie udało się zaakceptować zgłoszenia.\n\n${
+          error?.message || ""
+        }`
+      );
+    } finally {
+      setSignupSavingId(null);
+    }
+  }
+
+  async function rejectEventSignup(signup) {
+    const admin = await verifyAdminAccess();
+
+    if (!admin) return;
+
+    setSignupSavingId(signup.id);
+
+    try {
+      const { error: signupError } = await supabase
+        .from("event_signups")
+        .update({
+          status: "rejected",
+          reviewed_by: session.user.id,
+          reviewed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", signup.id);
+
+      if (signupError) throw signupError;
+
+      await supabase
+        .from("event_assignments")
+        .delete()
+        .eq("event_id", signup.event_id)
+        .eq("user_id", signup.user_id);
+
+      await loadEvents();
+    } catch (error) {
+      console.error("Błąd odrzucenia zgłoszenia:", error);
+      alert(
+        `Nie udało się odrzucić zgłoszenia.\n\n${
+          error?.message || ""
+        }`
+      );
+    } finally {
+      setSignupSavingId(null);
     }
   }
 
@@ -979,6 +1253,8 @@ export default function Home() {
     });
 
     setAssignmentDraft(draft);
+    setAssignmentSignupEnabled(Boolean(eventItem.signup_enabled));
+    setAssignmentSignupDeadline(eventItem.signup_deadline || "");
     setAssignmentEditorEvent(eventItem);
   }
 
@@ -995,6 +1271,19 @@ export default function Home() {
     setAssignmentSaving(true);
 
     try {
+      const { error: eventSettingsError } = await supabase
+        .from("events")
+        .update({
+          signup_enabled: assignmentSignupEnabled,
+          signup_deadline:
+            assignmentSignupEnabled && assignmentSignupDeadline
+              ? assignmentSignupDeadline
+              : null,
+        })
+        .eq("id", assignmentEditorEvent.id);
+
+      if (eventSettingsError) throw eventSettingsError;
+
       const { error: deleteError } = await supabase
         .from("event_assignments")
         .delete()
@@ -2265,6 +2554,8 @@ export default function Home() {
     setCurrentProfile(null);
     setReservations([]);
     setEvents([]);
+    setEventAssignments([]);
+    setEventSignups([]);
     setTasks([]);
     setPeople([]);
     setMemberships([]);
@@ -2773,8 +3064,25 @@ export default function Home() {
     .filter((item) => {
       if (isAdmin) return true;
       if (item.whole_troop) return true;
+      if (myPatrolIds.includes(Number(item.patrol_id))) return true;
 
-      return myPatrolIds.includes(Number(item.patrol_id));
+      const assignedToMe = eventAssignments.some(
+        (assignment) =>
+          Number(assignment.event_id) === Number(item.id) &&
+          assignment.user_id === session.user.id
+      );
+
+      if (assignedToMe) return true;
+
+      const mySignup = eventSignups.find(
+        (signup) =>
+          Number(signup.event_id) === Number(item.id) &&
+          signup.user_id === session.user.id
+      );
+
+      if (mySignup) return true;
+
+      return Boolean(item.signup_enabled);
     });
 
   const ownReservations = reservations.filter(
@@ -3786,7 +4094,10 @@ export default function Home() {
                             {" • "}
                             {trip.whole_troop
                               ? "CAŁA DRUŻYNA"
-                              : patrol?.name || "ZASTĘP"}
+                              : patrol?.name ||
+                                (assignmentsForEvent(trip.id).length
+                                  ? "WYBRANI UCZESTNICY"
+                                  : "WYDARZENIE")}
                           </div>
 
                           {rosterLabel(trip.id) && (
@@ -3806,6 +4117,48 @@ export default function Home() {
                               }}
                             >
                               {rosterLabel(trip.id)}
+                            </div>
+                          )}
+
+                          {trip.signup_enabled && (
+                            <div
+                              style={{
+                                display: "flex",
+                                gap: 6,
+                                flexWrap: "wrap",
+                                marginTop: 7,
+                              }}
+                            >
+                              <span
+                                style={{
+                                  background: "#edf7ef",
+                                  color: "#315d3e",
+                                  borderRadius: 20,
+                                  padding: "5px 8px",
+                                  fontSize: 10,
+                                  fontWeight: 900,
+                                }}
+                              >
+                                JEDZIE {assignmentsForEvent(trip.id).length}
+                              </span>
+
+                              <span
+                                style={{
+                                  background: "#fff5d9",
+                                  color: "#715818",
+                                  borderRadius: 20,
+                                  padding: "5px 8px",
+                                  fontSize: 10,
+                                  fontWeight: 900,
+                                }}
+                              >
+                                CZEKA{" "}
+                                {
+                                  signupsForEvent(trip.id).filter(
+                                    (signup) => signup.status === "pending"
+                                  ).length
+                                }
+                              </span>
                             </div>
                           )}
 
@@ -6501,8 +6854,126 @@ export default function Home() {
                 <option value="patrol">
                   Konkretny zastęp
                 </option>
+
+                {isTripType(eventForm.eventType) && (
+                  <option value="selected">
+                    Wybrane osoby
+                  </option>
+                )}
               </select>
             </label>
+
+            {eventForm.audience === "selected" &&
+              isTripType(eventForm.eventType) && (
+                <div
+                  style={{
+                    ...cardStyle,
+                    boxShadow: "none",
+                    background: "#f7f5ee",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      gap: 8,
+                      alignItems: "center",
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <strong>Kto jedzie?</strong>
+
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button
+                        type="button"
+                        style={secondaryStyle}
+                        onClick={() =>
+                          setEventForm({
+                            ...eventForm,
+                            selectedUserIds: people
+                              .filter(
+                                (person) =>
+                                  normalizeRole(person.role) !== "parent"
+                              )
+                              .map((person) => person.id),
+                          })
+                        }
+                      >
+                        Zaznacz wszystkich
+                      </button>
+
+                      <button
+                        type="button"
+                        style={secondaryStyle}
+                        onClick={() =>
+                          setEventForm({
+                            ...eventForm,
+                            selectedUserIds: [],
+                          })
+                        }
+                      >
+                        Wyczyść
+                      </button>
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      display: "grid",
+                      gap: 8,
+                      marginTop: 10,
+                      maxHeight: 260,
+                      overflowY: "auto",
+                    }}
+                  >
+                    {people
+                      .filter(
+                        (person) =>
+                          normalizeRole(person.role) !== "parent"
+                      )
+                      .map((person) => {
+                        const checked =
+                          eventForm.selectedUserIds.includes(person.id);
+
+                        return (
+                          <label
+                            key={`event-person-${person.id}`}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 9,
+                              cursor: "pointer",
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(event) =>
+                                setEventForm({
+                                  ...eventForm,
+                                  selectedUserIds: event.target.checked
+                                    ? [
+                                        ...eventForm.selectedUserIds,
+                                        person.id,
+                                      ]
+                                    : eventForm.selectedUserIds.filter(
+                                        (id) => id !== person.id
+                                      ),
+                                })
+                              }
+                            />
+
+                            <span>
+                              {person.full_name ||
+                                person.name ||
+                                "Użytkownik"}
+                            </span>
+                          </label>
+                        );
+                      })}
+                  </div>
+                </div>
+              )}
 
             {eventForm.audience === "patrol" && (
               <label>
@@ -6529,6 +7000,61 @@ export default function Home() {
                   ))}
                 </select>
               </label>
+            )}
+
+            {isTripType(eventForm.eventType) && (
+              <div
+                style={{
+                  ...cardStyle,
+                  boxShadow: "none",
+                  background: "#fffaf0",
+                  border: "1px solid #ead8a7",
+                }}
+              >
+                <label
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 9,
+                    cursor: "pointer",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={eventForm.signupEnabled}
+                    onChange={(event) =>
+                      setEventForm({
+                        ...eventForm,
+                        signupEnabled: event.target.checked,
+                      })
+                    }
+                  />
+
+                  <strong>Otwórz zgłoszenia „Zgłoś się”</strong>
+                </label>
+
+                {eventForm.signupEnabled && (
+                  <label
+                    style={{
+                      display: "block",
+                      marginTop: 10,
+                    }}
+                  >
+                    <strong>Termin zgłoszeń</strong>
+                    <input
+                      type="date"
+                      value={eventForm.signupDeadline}
+                      onChange={(event) =>
+                        setEventForm({
+                          ...eventForm,
+                          signupDeadline: event.target.value,
+                        })
+                      }
+                      style={inputStyle}
+                    />
+                  </label>
+                )}
+              </div>
             )}
 
             <label>
@@ -6878,6 +7404,53 @@ export default function Home() {
 
           <div
             style={{
+              ...cardStyle,
+              boxShadow: "none",
+              background: "#fffaf0",
+              border: "1px solid #ead8a7",
+              marginBottom: 12,
+            }}
+          >
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 9,
+                cursor: "pointer",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={assignmentSignupEnabled}
+                onChange={(event) =>
+                  setAssignmentSignupEnabled(event.target.checked)
+                }
+              />
+              <strong>Zgłoszenia „Zgłoś się” są otwarte</strong>
+            </label>
+
+            {assignmentSignupEnabled && (
+              <label
+                style={{
+                  display: "block",
+                  marginTop: 10,
+                }}
+              >
+                <strong>Termin zgłoszeń</strong>
+                <input
+                  type="date"
+                  value={assignmentSignupDeadline}
+                  onChange={(event) =>
+                    setAssignmentSignupDeadline(event.target.value)
+                  }
+                  style={inputStyle}
+                />
+              </label>
+            )}
+          </div>
+
+          <div
+            style={{
               display: "grid",
               gap: 9,
               maxHeight: "52vh",
@@ -7001,7 +7574,11 @@ export default function Home() {
             {" • "}
             {eventDetails.whole_troop
               ? "CAŁA DRUŻYNA"
-              : "WYDARZENIE ZASTĘPU"}
+              : eventDetails.patrol_id
+              ? "WYDARZENIE ZASTĘPU"
+              : assignmentsForEvent(eventDetails.id).length
+              ? "WYBRANI UCZESTNICY"
+              : "WYDARZENIE"}
           </div>
 
           {isTripType(eventDetails.event_type) && (
@@ -7112,6 +7689,305 @@ export default function Home() {
                     </div>
                   ))}
                 </div>
+              </div>
+            )}
+
+          {isTripType(eventDetails.event_type) &&
+            eventDetails.signup_enabled && (
+              <div
+                style={{
+                  ...cardStyle,
+                  boxShadow: "none",
+                  background: "#fffaf0",
+                  border: "1px solid #ead8a7",
+                  marginTop: 12,
+                }}
+              >
+                <div style={eyebrowStyle}>ZGŁOSZENIA NA WYJAZD</div>
+
+                <div
+                  style={{
+                    display: "flex",
+                    gap: 8,
+                    flexWrap: "wrap",
+                    margin: "8px 0 12px",
+                  }}
+                >
+                  <span
+                    style={{
+                      background: "#edf7ef",
+                      color: "#315d3e",
+                      borderRadius: 20,
+                      padding: "6px 9px",
+                      fontSize: 11,
+                      fontWeight: 900,
+                    }}
+                  >
+                    JEDZIE {assignmentsForEvent(eventDetails.id).length}
+                  </span>
+
+                  <span
+                    style={{
+                      background: "#fff2c7",
+                      color: "#715818",
+                      borderRadius: 20,
+                      padding: "6px 9px",
+                      fontSize: 11,
+                      fontWeight: 900,
+                    }}
+                  >
+                    OCZEKUJE{" "}
+                    {
+                      signupsForEvent(eventDetails.id).filter(
+                        (signup) => signup.status === "pending"
+                      ).length
+                    }
+                  </span>
+                </div>
+
+                {eventDetails.signup_deadline && (
+                  <div
+                    style={{
+                      color: "#6e6040",
+                      fontSize: 13,
+                      marginBottom: 10,
+                    }}
+                  >
+                    Zgłoszenia do:{" "}
+                    <strong>
+                      {formatDate(eventDetails.signup_deadline)}
+                    </strong>
+                  </div>
+                )}
+
+                {!isAdmin && (
+                  <>
+                    {mySignupForEvent(eventDetails.id) ? (
+                      <div>
+                        <div
+                          style={{
+                            fontWeight: 900,
+                            color:
+                              mySignupForEvent(eventDetails.id)?.status ===
+                              "approved"
+                                ? "#315d3e"
+                                : mySignupForEvent(eventDetails.id)?.status ===
+                                  "rejected"
+                                ? "#8b2635"
+                                : "#715818",
+                          }}
+                        >
+                          Twoje zgłoszenie:{" "}
+                          {signupStatusLabel(
+                            mySignupForEvent(eventDetails.id)?.status
+                          )}
+                        </div>
+
+                        {mySignupForEvent(eventDetails.id)?.status !==
+                          "approved" && (
+                          <button
+                            style={{
+                              ...secondaryStyle,
+                              marginTop: 9,
+                            }}
+                            disabled={
+                              signupSavingId === eventDetails.id
+                            }
+                            onClick={() =>
+                              withdrawEventSignup(eventDetails)
+                            }
+                          >
+                            Wycofaj zgłoszenie
+                          </button>
+                        )}
+                      </div>
+                    ) : assignmentsForEvent(eventDetails.id).some(
+                        (item) => item.user_id === session.user.id
+                      ) ? (
+                      <strong style={{ color: "#315d3e" }}>
+                        ✓ Jesteś na liście uczestników
+                      </strong>
+                    ) : (
+                      <button
+                        style={primaryStyle}
+                        disabled={
+                          signupSavingId === eventDetails.id ||
+                          (eventDetails.signup_deadline &&
+                            eventDetails.signup_deadline < today)
+                        }
+                        onClick={() =>
+                          submitEventSignup(eventDetails)
+                        }
+                      >
+                        {signupSavingId === eventDetails.id
+                          ? "Wysyłam..."
+                          : eventDetails.signup_deadline &&
+                            eventDetails.signup_deadline < today
+                          ? "Zgłoszenia zamknięte"
+                          : "🙋 Zgłoś się"}
+                      </button>
+                    )}
+                  </>
+                )}
+
+                <div
+                  style={{
+                    marginTop: 14,
+                    display: "grid",
+                    gap: 7,
+                  }}
+                >
+                  <strong>Lista zatwierdzonych</strong>
+
+                  {assignmentsForEvent(eventDetails.id).length === 0 ? (
+                    <div
+                      style={{
+                        color: "#7b837e",
+                        fontSize: 13,
+                      }}
+                    >
+                      Na razie nikt nie jest zatwierdzony.
+                    </div>
+                  ) : (
+                    assignmentsForEvent(eventDetails.id).map((item) => (
+                      <div
+                        key={`accepted-${item.id}`}
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          gap: 10,
+                          padding: "7px 0",
+                          borderBottom: "1px solid #ece8db",
+                        }}
+                      >
+                        <strong>{item.personName}</strong>
+                        <span
+                          style={{
+                            color: "#315d3e",
+                            fontSize: 11,
+                            fontWeight: 900,
+                          }}
+                        >
+                          JEDZIE
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                <div
+                  style={{
+                    marginTop: 14,
+                    display: "grid",
+                    gap: 7,
+                  }}
+                >
+                  <strong>Oczekują na akceptację</strong>
+
+                  {signupsForEvent(eventDetails.id).filter(
+                    (signup) => signup.status === "pending"
+                  ).length === 0 ? (
+                    <div
+                      style={{
+                        color: "#7b837e",
+                        fontSize: 13,
+                      }}
+                    >
+                      Brak oczekujących zgłoszeń.
+                    </div>
+                  ) : (
+                    signupsForEvent(eventDetails.id)
+                      .filter(
+                        (signup) => signup.status === "pending"
+                      )
+                      .map((signup) => (
+                        <div
+                          key={`pending-signup-${signup.id}`}
+                          style={{
+                            ...cardStyle,
+                            boxShadow: "none",
+                            padding: 10,
+                            background: "white",
+                          }}
+                        >
+                          <strong>{signup.personName}</strong>
+
+                          {isAdmin && (
+                            <div
+                              style={{
+                                display: "grid",
+                                gridTemplateColumns: "1fr 1fr",
+                                gap: 7,
+                                marginTop: 8,
+                              }}
+                            >
+                              <button
+                                style={secondaryStyle}
+                                disabled={signupSavingId === signup.id}
+                                onClick={() =>
+                                  rejectEventSignup(signup)
+                                }
+                              >
+                                Odrzuć
+                              </button>
+
+                              <button
+                                style={primaryStyle}
+                                disabled={signupSavingId === signup.id}
+                                onClick={() =>
+                                  approveEventSignup(signup)
+                                }
+                              >
+                                Akceptuj
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      ))
+                  )}
+                </div>
+
+                {isAdmin &&
+                  signupsForEvent(eventDetails.id).some(
+                    (signup) => signup.status === "rejected"
+                  ) && (
+                    <details style={{ marginTop: 12 }}>
+                      <summary
+                        style={{
+                          cursor: "pointer",
+                          fontWeight: 800,
+                          color: "#8b2635",
+                        }}
+                      >
+                        Odrzuceni (
+                        {
+                          signupsForEvent(eventDetails.id).filter(
+                            (signup) => signup.status === "rejected"
+                          ).length
+                        }
+                        )
+                      </summary>
+
+                      <div
+                        style={{
+                          display: "grid",
+                          gap: 5,
+                          marginTop: 8,
+                          color: "#6c756f",
+                        }}
+                      >
+                        {signupsForEvent(eventDetails.id)
+                          .filter(
+                            (signup) => signup.status === "rejected"
+                          )
+                          .map((signup) => (
+                            <div key={`rejected-${signup.id}`}>
+                              {signup.personName}
+                            </div>
+                          ))}
+                      </div>
+                    </details>
+                  )}
               </div>
             )}
 
