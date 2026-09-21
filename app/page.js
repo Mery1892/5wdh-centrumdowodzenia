@@ -10,7 +10,7 @@ const PATROLS = [
   { name: "Wędrownicy", leader: "Tymon" },
 ];
 
-const LOCATIONS = ["Nora", "Basecamp"];
+const MAIN_LOCATIONS = ["Nora", "Basecamp"];
 
 const STARTING_RESERVATIONS = [
   {
@@ -37,6 +37,22 @@ const STARTING_RESERVATIONS = [
     leader: "Tymon",
     location: "Nora",
   },
+  {
+    id: 4,
+    date: "2026-09-21",
+    time: "17:30",
+    patrol: "HS Męski",
+    leader: "Karol",
+    location: "Basecamp",
+  },
+  {
+    id: 5,
+    date: "2026-09-24",
+    time: "18:00",
+    patrol: "HS Damski",
+    leader: "Basia",
+    location: "Orlik",
+  },
 ];
 
 function createTimes() {
@@ -47,8 +63,6 @@ function createTimes() {
     result.push(`${String(hour).padStart(2, "0")}:30`);
   }
 
-  result.push("22:00");
-
   return result;
 }
 
@@ -57,11 +71,20 @@ const TIMES = createTimes();
 function addMinutes(time, minutes) {
   const [hours, mins] = time.split(":").map(Number);
   const date = new Date();
+
   date.setHours(hours, mins + minutes, 0, 0);
 
   return `${String(date.getHours()).padStart(2, "0")}:${String(
     date.getMinutes()
   ).padStart(2, "0")}`;
+}
+
+function dateToString(date) {
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0"),
+  ].join("-");
 }
 
 function formatDate(dateString) {
@@ -78,18 +101,54 @@ function moveDate(dateString, days) {
   const date = new Date(`${dateString}T12:00:00`);
   date.setDate(date.getDate() + days);
 
-  return [
-    date.getFullYear(),
-    String(date.getMonth() + 1).padStart(2, "0"),
-    String(date.getDate()).padStart(2, "0"),
-  ].join("-");
+  return dateToString(date);
+}
+
+function getCalendarDays(year, month) {
+  const firstDay = new Date(year, month, 1);
+  const lastDay = new Date(year, month + 1, 0);
+
+  const startOffset = (firstDay.getDay() + 6) % 7;
+
+  const days = [];
+
+  for (let i = 0; i < startOffset; i++) {
+    days.push(null);
+  }
+
+  for (let day = 1; day <= lastDay.getDate(); day++) {
+    days.push(new Date(year, month, day));
+  }
+
+  while (days.length % 7 !== 0) {
+    days.push(null);
+  }
+
+  return days;
 }
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState("Grafik");
-  const [selectedDate, setSelectedDate] = useState("2026-09-26");
-  const [locationFilter, setLocationFilter] = useState("Wszystkie");
-  const [reservations, setReservations] = useState(STARTING_RESERVATIONS);
+
+  const [selectedDate, setSelectedDate] =
+    useState("2026-09-26");
+
+  const initialDate = new Date("2026-09-26T12:00:00");
+
+  const [calendarYear, setCalendarYear] = useState(
+    initialDate.getFullYear()
+  );
+
+  const [calendarMonth, setCalendarMonth] = useState(
+    initialDate.getMonth()
+  );
+
+  const [locationFilter, setLocationFilter] =
+    useState("Wszystkie");
+
+  const [reservations, setReservations] = useState(
+    STARTING_RESERVATIONS
+  );
 
   const [modalOpen, setModalOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(null);
@@ -97,31 +156,85 @@ export default function Home() {
   const [form, setForm] = useState({
     patrol: "H Falco",
     location: "Nora",
+    customLocation: "",
     time: "17:30",
   });
 
-  function openReservation(time = "17:30", location = "Nora") {
+  function openReservation(
+    time = "17:30",
+    location = "Nora"
+  ) {
     setForm({
       patrol: "H Falco",
-      location,
+      location:
+        MAIN_LOCATIONS.includes(location)
+          ? location
+          : "Inne",
+      customLocation:
+        MAIN_LOCATIONS.includes(location)
+          ? ""
+          : location,
       time,
     });
 
     setModalOpen(true);
   }
 
+  function selectCalendarDay(date) {
+    const newDate = dateToString(date);
+
+    setSelectedDate(newDate);
+    setCalendarYear(date.getFullYear());
+    setCalendarMonth(date.getMonth());
+  }
+
+  function changeDay(days) {
+    const newDate = moveDate(selectedDate, days);
+    const date = new Date(`${newDate}T12:00:00`);
+
+    setSelectedDate(newDate);
+    setCalendarYear(date.getFullYear());
+    setCalendarMonth(date.getMonth());
+  }
+
+  function changeMonth(amount) {
+    const date = new Date(
+      calendarYear,
+      calendarMonth + amount,
+      1
+    );
+
+    setCalendarYear(date.getFullYear());
+    setCalendarMonth(date.getMonth());
+  }
+
   function saveReservation() {
-    const patrol = PATROLS.find((item) => item.name === form.patrol);
+    const patrol = PATROLS.find(
+      (item) => item.name === form.patrol
+    );
+
+    const finalLocation =
+      form.location === "Inne"
+        ? form.customLocation.trim()
+        : form.location;
+
+    if (!finalLocation) {
+      alert("Wpisz miejsce zbiórki.");
+      return;
+    }
 
     const occupied = reservations.some(
       (item) =>
         item.date === selectedDate &&
         item.time === form.time &&
-        item.location === form.location
+        item.location.toLowerCase() ===
+          finalLocation.toLowerCase()
     );
 
     if (occupied) {
-      alert("Ten termin w tym miejscu jest już zajęty.");
+      alert(
+        "Ten termin w tym miejscu jest już zajęty."
+      );
       return;
     }
 
@@ -133,7 +246,7 @@ export default function Home() {
         time: form.time,
         patrol: patrol.name,
         leader: patrol.leader,
-        location: form.location,
+        location: finalLocation,
       },
     ]);
 
@@ -141,18 +254,37 @@ export default function Home() {
   }
 
   function removeReservation(id) {
-    setReservations(reservations.filter((item) => item.id !== id));
+    setReservations(
+      reservations.filter((item) => item.id !== id)
+    );
+
     setDetailsOpen(null);
   }
 
   const dayReservations = reservations
     .filter((item) => item.date === selectedDate)
-    .filter(
-      (item) =>
-        locationFilter === "Wszystkie" ||
-        item.location === locationFilter
-    )
+    .filter((item) => {
+      if (locationFilter === "Wszystkie") {
+        return true;
+      }
+
+      if (locationFilter === "Inne") {
+        return !MAIN_LOCATIONS.includes(item.location);
+      }
+
+      return item.location === locationFilter;
+    })
     .sort((a, b) => a.time.localeCompare(b.time));
+
+  const calendarDays = getCalendarDays(
+    calendarYear,
+    calendarMonth
+  );
+
+  const monthName = new Intl.DateTimeFormat("pl-PL", {
+    month: "long",
+    year: "numeric",
+  }).format(new Date(calendarYear, calendarMonth, 1));
 
   const styles = {
     app: {
@@ -242,6 +374,244 @@ export default function Home() {
       >
         {activeTab === "Grafik" && (
           <>
+            {/* KALENDARZ MIESIĘCZNY */}
+
+            <div
+              style={{
+                ...styles.card,
+                marginBottom: 22,
+                padding: 18,
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  gap: 10,
+                  marginBottom: 18,
+                }}
+              >
+                <button
+                  style={styles.secondary}
+                  onClick={() => changeMonth(-1)}
+                >
+                  ←
+                </button>
+
+                <div
+                  style={{
+                    textAlign: "center",
+                    fontWeight: 900,
+                    fontSize: 18,
+                    textTransform: "capitalize",
+                  }}
+                >
+                  {monthName}
+                </div>
+
+                <button
+                  style={styles.secondary}
+                  onClick={() => changeMonth(1)}
+                >
+                  →
+                </button>
+              </div>
+
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(7, 1fr)",
+                  textAlign: "center",
+                  marginBottom: 7,
+                }}
+              >
+                {[
+                  "Pon",
+                  "Wt",
+                  "Śr",
+                  "Czw",
+                  "Pt",
+                  "Sob",
+                  "Nd",
+                ].map((day) => (
+                  <div
+                    key={day}
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 800,
+                      color: "#78827c",
+                      padding: "5px 0",
+                    }}
+                  >
+                    {day}
+                  </div>
+                ))}
+              </div>
+
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(7, 1fr)",
+                  gap: 5,
+                }}
+              >
+                {calendarDays.map((date, index) => {
+                  if (!date) {
+                    return (
+                      <div
+                        key={`empty-${index}`}
+                        style={{ minHeight: 55 }}
+                      />
+                    );
+                  }
+
+                  const dateString = dateToString(date);
+
+                  const isSelected =
+                    dateString === selectedDate;
+
+                  const reservationsThisDay =
+                    reservations.filter(
+                      (item) =>
+                        item.date === dateString
+                    );
+
+                  const hasNora =
+                    reservationsThisDay.some(
+                      (item) =>
+                        item.location === "Nora"
+                    );
+
+                  const hasBasecamp =
+                    reservationsThisDay.some(
+                      (item) =>
+                        item.location === "Basecamp"
+                    );
+
+                  const hasOther =
+                    reservationsThisDay.some(
+                      (item) =>
+                        !MAIN_LOCATIONS.includes(
+                          item.location
+                        )
+                    );
+
+                  return (
+                    <button
+                      key={dateString}
+                      onClick={() =>
+                        selectCalendarDay(date)
+                      }
+                      style={{
+                        border: 0,
+                        background: isSelected
+                          ? "#173b2b"
+                          : "transparent",
+                        color: isSelected
+                          ? "white"
+                          : "#17231c",
+                        borderRadius: 14,
+                        minHeight: 55,
+                        cursor: "pointer",
+                        display: "flex",
+                        flexDirection: "column",
+                        justifyContent: "center",
+                        alignItems: "center",
+                        gap: 5,
+                        fontWeight: isSelected
+                          ? 900
+                          : 600,
+                      }}
+                    >
+                      <span>{date.getDate()}</span>
+
+                      <div
+                        style={{
+                          height: 7,
+                          display: "flex",
+                          gap: 3,
+                          justifyContent: "center",
+                        }}
+                      >
+                        {hasNora && (
+                          <span
+                            title="Nora"
+                            style={{
+                              width: 6,
+                              height: 6,
+                              borderRadius: "50%",
+                              background: isSelected
+                                ? "#f1a5ae"
+                                : "#9d293b",
+                            }}
+                          />
+                        )}
+
+                        {hasBasecamp && (
+                          <span
+                            title="Basecamp"
+                            style={{
+                              width: 6,
+                              height: 6,
+                              borderRadius: "50%",
+                              background: isSelected
+                                ? "#bcd3b2"
+                                : "#607b54",
+                            }}
+                          />
+                        )}
+
+                        {hasOther && (
+                          <span
+                            title="Inne miejsce"
+                            style={{
+                              width: 6,
+                              height: 6,
+                              borderRadius: "50%",
+                              background: isSelected
+                                ? "#f3d899"
+                                : "#b98a2f",
+                            }}
+                          />
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div
+                style={{
+                  borderTop: "1px solid #edf0ed",
+                  marginTop: 15,
+                  paddingTop: 12,
+                  display: "flex",
+                  gap: 17,
+                  flexWrap: "wrap",
+                  fontSize: 11,
+                  color: "#68736d",
+                }}
+              >
+                <LegendDot
+                  color="#9d293b"
+                  label="Nora"
+                />
+
+                <LegendDot
+                  color="#607b54"
+                  label="Basecamp"
+                />
+
+                <LegendDot
+                  color="#b98a2f"
+                  label="Inne miejsce"
+                />
+              </div>
+            </div>
+
+            {/* WIDOK KONKRETNEGO DNIA */}
+
             <div
               style={{
                 display: "flex",
@@ -284,6 +654,8 @@ export default function Home() {
               </button>
             </div>
 
+            {/* DZIEŃ WSTECZ / DALEJ */}
+
             <div
               style={{
                 ...styles.card,
@@ -296,9 +668,7 @@ export default function Home() {
             >
               <button
                 style={styles.secondary}
-                onClick={() =>
-                  setSelectedDate(moveDate(selectedDate, -1))
-                }
+                onClick={() => changeDay(-1)}
               >
                 ←
               </button>
@@ -306,12 +676,26 @@ export default function Home() {
               <input
                 type="date"
                 value={selectedDate}
-                onChange={(event) =>
-                  setSelectedDate(event.target.value)
-                }
+                onChange={(event) => {
+                  const value = event.target.value;
+
+                  if (!value) return;
+
+                  const date = new Date(
+                    `${value}T12:00:00`
+                  );
+
+                  setSelectedDate(value);
+                  setCalendarYear(
+                    date.getFullYear()
+                  );
+                  setCalendarMonth(
+                    date.getMonth()
+                  );
+                }}
                 style={{
                   border: 0,
-                  fontWeight: 700,
+                  fontWeight: 800,
                   fontSize: 15,
                   background: "transparent",
                   color: "#17231c",
@@ -320,13 +704,13 @@ export default function Home() {
 
               <button
                 style={styles.secondary}
-                onClick={() =>
-                  setSelectedDate(moveDate(selectedDate, 1))
-                }
+                onClick={() => changeDay(1)}
               >
                 →
               </button>
             </div>
+
+            {/* FILTRY */}
 
             <div
               style={{
@@ -337,10 +721,17 @@ export default function Home() {
                 marginBottom: 18,
               }}
             >
-              {["Wszystkie", ...LOCATIONS].map((location) => (
+              {[
+                "Wszystkie",
+                "Nora",
+                "Basecamp",
+                "Inne",
+              ].map((location) => (
                 <button
                   key={location}
-                  onClick={() => setLocationFilter(location)}
+                  onClick={() =>
+                    setLocationFilter(location)
+                  }
                   style={{
                     border:
                       locationFilter === location
@@ -359,13 +750,17 @@ export default function Home() {
                     whiteSpace: "nowrap",
                     cursor: "pointer",
                     fontWeight:
-                      locationFilter === location ? 700 : 500,
+                      locationFilter === location
+                        ? 700
+                        : 500,
                   }}
                 >
                   {location}
                 </button>
               ))}
             </div>
+
+            {/* ZAJĘTE TERMINY */}
 
             {dayReservations.length === 0 && (
               <div
@@ -386,65 +781,78 @@ export default function Home() {
                 gap: 10,
               }}
             >
-              {dayReservations.map((reservation) => (
-                <button
-                  key={reservation.id}
-                  onClick={() => setDetailsOpen(reservation)}
-                  style={{
-                    ...styles.card,
-                    width: "100%",
-                    border: 0,
-                    borderLeft: "5px solid #8b2635",
-                    textAlign: "left",
-                    display: "grid",
-                    gridTemplateColumns:
-                      "minmax(90px,110px) 1fr auto",
-                    alignItems: "center",
-                    gap: 12,
-                    cursor: "pointer",
-                    color: "#17231c",
-                  }}
-                >
-                  <strong>
-                    {reservation.time}–
-                    {addMinutes(reservation.time, 30)}
-                  </strong>
+              {dayReservations.map(
+                (reservation) => (
+                  <button
+                    key={reservation.id}
+                    onClick={() =>
+                      setDetailsOpen(
+                        reservation
+                      )
+                    }
+                    style={{
+                      ...styles.card,
+                      width: "100%",
+                      border: 0,
+                      borderLeft:
+                        "5px solid #8b2635",
+                      textAlign: "left",
+                      display: "grid",
+                      gridTemplateColumns:
+                        "minmax(90px,110px) 1fr auto",
+                      alignItems: "center",
+                      gap: 12,
+                      cursor: "pointer",
+                      color: "#17231c",
+                    }}
+                  >
+                    <strong>
+                      {reservation.time}–
+                      {addMinutes(
+                        reservation.time,
+                        30
+                      )}
+                    </strong>
 
-                  <div>
-                    <div
+                    <div>
+                      <div
+                        style={{
+                          fontSize: 17,
+                          fontWeight: 800,
+                        }}
+                      >
+                        {reservation.patrol}
+                      </div>
+
+                      <div
+                        style={{
+                          color: "#6a746e",
+                          fontSize: 13,
+                          marginTop: 3,
+                        }}
+                      >
+                        {reservation.leader} •
+                        zastępowy / lider
+                      </div>
+                    </div>
+
+                    <span
                       style={{
-                        fontSize: 17,
+                        background: "#edf1ed",
+                        padding: "8px 10px",
+                        borderRadius: 11,
+                        fontSize: 12,
                         fontWeight: 800,
                       }}
                     >
-                      {reservation.patrol}
-                    </div>
-
-                    <div
-                      style={{
-                        color: "#6a746e",
-                        fontSize: 13,
-                        marginTop: 3,
-                      }}
-                    >
-                      {reservation.leader} • zastępowy / lider
-                    </div>
-                  </div>
-
-                  <span
-                    style={{
-                      background: "#edf1ed",
-                      padding: "8px 10px",
-                      borderRadius: 11,
-                      fontSize: 12,
-                      fontWeight: 800,
-                    }}
-                  >
-                    {reservation.location}
-                  </span>
-                </button>
-              ))}
+                      {reservation.location}
+                    </span>
+                  </button>
+                )
+              )}
             </div>
+
+            {/* WOLNE TERMINY */}
 
             <h3
               style={{
@@ -461,100 +869,182 @@ export default function Home() {
               }}
             >
               {TIMES.filter((time) => {
-                const hour = Number(time.slice(0, 2));
-                const date = new Date(`${selectedDate}T12:00:00`);
+                const hour = Number(
+                  time.slice(0, 2)
+                );
+
+                const date = new Date(
+                  `${selectedDate}T12:00:00`
+                );
+
                 const weekend =
-                  date.getDay() === 0 || date.getDay() === 6;
+                  date.getDay() === 0 ||
+                  date.getDay() === 6;
 
-                if (!weekend && (hour < 12 || hour >= 22)) {
+                if (
+                  !weekend &&
+                  (hour < 12 || hour >= 22)
+                ) {
                   return false;
                 }
 
-                if (weekend && (hour < 7 || hour >= 22)) {
+                if (
+                  weekend &&
+                  (hour < 7 || hour >= 22)
+                ) {
                   return false;
                 }
 
-                return time !== "22:00";
+                return true;
               })
-                .slice(0, 12)
+                .slice(0, 20)
                 .map((time) => {
-                  const locationsToShow =
-                    locationFilter === "Wszystkie"
-                      ? LOCATIONS
-                      : [locationFilter];
+                  let locationsToShow = [];
 
-                  return locationsToShow.map((location) => {
-                    const occupied = reservations.some(
-                      (item) =>
-                        item.date === selectedDate &&
-                        item.time === time &&
-                        item.location === location
-                    );
+                  if (
+                    locationFilter ===
+                    "Wszystkie"
+                  ) {
+                    locationsToShow = [
+                      "Nora",
+                      "Basecamp",
+                    ];
+                  } else if (
+                    locationFilter === "Inne"
+                  ) {
+                    return null;
+                  } else {
+                    locationsToShow = [
+                      locationFilter,
+                    ];
+                  }
 
-                    if (occupied) return null;
+                  return locationsToShow.map(
+                    (location) => {
+                      const occupied =
+                        reservations.some(
+                          (item) =>
+                            item.date ===
+                              selectedDate &&
+                            item.time ===
+                              time &&
+                            item.location ===
+                              location
+                        );
 
-                    return (
-                      <div
-                        key={`${time}-${location}`}
-                        style={{
-                          border: "2px dashed #ccd2cd",
-                          borderRadius: 16,
-                          padding: 14,
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "space-between",
-                          gap: 10,
-                        }}
-                      >
-                        <div>
-                          <strong>
-                            {time}–{addMinutes(time, 30)}
-                          </strong>
+                      if (occupied) {
+                        return null;
+                      }
 
-                          <div
-                            style={{
-                              fontSize: 13,
-                              color: "#6c756f",
-                              marginTop: 3,
-                            }}
-                          >
-                            {location} • wolne
-                          </div>
-                        </div>
-
-                        <button
-                          style={styles.secondary}
-                          onClick={() =>
-                            openReservation(time, location)
-                          }
+                      return (
+                        <div
+                          key={`${time}-${location}`}
+                          style={{
+                            border:
+                              "2px dashed #ccd2cd",
+                            borderRadius: 16,
+                            padding: 14,
+                            display: "flex",
+                            alignItems:
+                              "center",
+                            justifyContent:
+                              "space-between",
+                            gap: 10,
+                          }}
                         >
-                          Zarezerwuj
-                        </button>
-                      </div>
-                    );
-                  });
+                          <div>
+                            <strong>
+                              {time}–
+                              {addMinutes(
+                                time,
+                                30
+                              )}
+                            </strong>
+
+                            <div
+                              style={{
+                                fontSize: 13,
+                                color:
+                                  "#6c756f",
+                                marginTop: 3,
+                              }}
+                            >
+                              {location} •
+                              wolne
+                            </div>
+                          </div>
+
+                          <button
+                            style={
+                              styles.secondary
+                            }
+                            onClick={() =>
+                              openReservation(
+                                time,
+                                location
+                              )
+                            }
+                          >
+                            Zarezerwuj
+                          </button>
+                        </div>
+                      );
+                    }
+                  );
                 })}
+
+              {/* DOWOLNE MIEJSCE */}
+
+              <button
+                onClick={() =>
+                  openReservation(
+                    "17:30",
+                    "Inne miejsce"
+                  )
+                }
+                style={{
+                  border:
+                    "2px dashed #b98a2f",
+                  borderRadius: 16,
+                  padding: 15,
+                  background: "#fffdf7",
+                  color: "#72571e",
+                  cursor: "pointer",
+                  fontWeight: 800,
+                  textAlign: "center",
+                }}
+              >
+                + Zarezerwuj inne miejsce
+              </button>
             </div>
           </>
         )}
+
+        {/* MOJE */}
 
         {activeTab === "Moje" && (
           <>
             <h2>Moje</h2>
 
             <p style={{ color: "#66736c" }}>
-              Twoje najbliższe rezerwacje i sprawy.
+              Twoje najbliższe rezerwacje i
+              sprawy.
             </p>
 
             <div style={styles.card}>
-              <strong>Najbliższe działania</strong>
+              <strong>
+                Najbliższe działania
+              </strong>
+
               <p style={{ color: "#69746d" }}>
-                Tutaj podepniemy rezerwacje użytkownika,
-                zadania i wyjazdy.
+                Tutaj podepniemy rezerwacje
+                użytkownika, zadania i wyjazdy.
               </p>
             </div>
           </>
         )}
+
+        {/* WYJAZDY */}
 
         {activeTab === "Wyjazdy" && (
           <>
@@ -568,12 +1058,15 @@ export default function Home() {
               <strong>+ Nowy wyjazd</strong>
 
               <p style={{ color: "#69746d" }}>
-                Tu pojawią się terminy, uczestnicy, transport,
-                koszty, wpłaty i zgody.
+                Tu pojawią się terminy,
+                uczestnicy, transport, koszty,
+                wpłaty i zgody.
               </p>
             </div>
           </>
         )}
+
+        {/* ZADANIA */}
 
         {activeTab === "Zadania" && (
           <>
@@ -584,15 +1077,18 @@ export default function Home() {
             </p>
 
             <div style={styles.card}>
-              <strong>Brak aktywnych zadań</strong>
+              <strong>
+                Brak aktywnych zadań
+              </strong>
 
               <p style={{ color: "#69746d" }}>
-                W kolejnym etapie podepniemy zadania kadry z
-                bazy.
+                Tutaj podepniemy zadania kadry.
               </p>
             </div>
           </>
         )}
+
+        {/* WIĘCEJ */}
 
         {activeTab === "Więcej" && (
           <>
@@ -623,7 +1119,7 @@ export default function Home() {
                   }}
                   onClick={() =>
                     alert(
-                      `${item} — ten moduł podepniemy w następnym etapie.`
+                      `${item} — ten moduł podepniemy później.`
                     )
                   }
                 >
@@ -635,49 +1131,70 @@ export default function Home() {
         )}
       </section>
 
+      {/* DOLNE MENU */}
+
       <nav
         style={{
           position: "fixed",
           bottom: 0,
           left: 0,
           right: 0,
-          background: "rgba(255,255,255,.97)",
-          borderTop: "1px solid #dde1dd",
+          background:
+            "rgba(255,255,255,.97)",
+          borderTop:
+            "1px solid #dde1dd",
           display: "flex",
           justifyContent: "space-around",
           zIndex: 50,
           padding: "11px 3px 14px",
-          boxShadow: "0 -5px 18px rgba(0,0,0,.04)",
+          boxShadow:
+            "0 -5px 18px rgba(0,0,0,.04)",
         }}
       >
-        {["Grafik", "Moje", "Wyjazdy", "Zadania", "Więcej"].map(
-          (tab) => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              style={{
-                border: 0,
-                background: "transparent",
-                color:
-                  activeTab === tab ? "#8b2635" : "#68736d",
-                fontWeight: activeTab === tab ? 800 : 500,
-                cursor: "pointer",
-                padding: "6px 8px",
-              }}
-            >
-              {tab}
-            </button>
-          )
-        )}
+        {[
+          "Grafik",
+          "Moje",
+          "Wyjazdy",
+          "Zadania",
+          "Więcej",
+        ].map((tab) => (
+          <button
+            key={tab}
+            onClick={() =>
+              setActiveTab(tab)
+            }
+            style={{
+              border: 0,
+              background: "transparent",
+              color:
+                activeTab === tab
+                  ? "#8b2635"
+                  : "#68736d",
+              fontWeight:
+                activeTab === tab
+                  ? 800
+                  : 500,
+              cursor: "pointer",
+              padding: "6px 8px",
+            }}
+          >
+            {tab}
+          </button>
+        ))}
       </nav>
+
+      {/* NOWA REZERWACJA */}
 
       {modalOpen && (
         <div
-          onClick={() => setModalOpen(false)}
+          onClick={() =>
+            setModalOpen(false)
+          }
           style={{
             position: "fixed",
             inset: 0,
-            background: "rgba(10,20,15,.58)",
+            background:
+              "rgba(10,20,15,.58)",
             zIndex: 100,
             display: "flex",
             alignItems: "flex-end",
@@ -685,18 +1202,31 @@ export default function Home() {
           }}
         >
           <div
-            onClick={(event) => event.stopPropagation()}
+            onClick={(event) =>
+              event.stopPropagation()
+            }
             style={{
               background: "#f7f6f1",
               width: "100%",
               maxWidth: 600,
-              borderRadius: "26px 26px 0 0",
-              padding: "23px 18px 28px",
+              borderRadius:
+                "26px 26px 0 0",
+              padding:
+                "23px 18px 28px",
             }}
           >
             <h2 style={{ marginTop: 0 }}>
               Nowa rezerwacja
             </h2>
+
+            <p
+              style={{
+                color: "#69746d",
+                marginTop: -8,
+              }}
+            >
+              {formatDate(selectedDate)}
+            </p>
 
             <div
               style={{
@@ -704,6 +1234,8 @@ export default function Home() {
                 gap: 15,
               }}
             >
+              {/* ZASTĘP */}
+
               <label>
                 <strong>Zastęp</strong>
 
@@ -712,18 +1244,25 @@ export default function Home() {
                   onChange={(event) =>
                     setForm({
                       ...form,
-                      patrol: event.target.value,
+                      patrol:
+                        event.target.value,
                     })
                   }
                   style={inputStyle}
                 >
-                  {PATROLS.map((patrol) => (
-                    <option key={patrol.name}>
-                      {patrol.name}
-                    </option>
-                  ))}
+                  {PATROLS.map(
+                    (patrol) => (
+                      <option
+                        key={patrol.name}
+                      >
+                        {patrol.name}
+                      </option>
+                    )
+                  )}
                 </select>
               </label>
+
+              {/* MIEJSCE */}
 
               <label>
                 <strong>Miejsce</strong>
@@ -733,18 +1272,59 @@ export default function Home() {
                   onChange={(event) =>
                     setForm({
                       ...form,
-                      location: event.target.value,
+                      location:
+                        event.target.value,
+                      customLocation:
+                        event.target.value ===
+                        "Inne"
+                          ? form.customLocation
+                          : "",
                     })
                   }
                   style={inputStyle}
                 >
-                  {LOCATIONS.map((location) => (
-                    <option key={location}>
-                      {location}
-                    </option>
-                  ))}
+                  <option value="Nora">
+                    Nora
+                  </option>
+
+                  <option value="Basecamp">
+                    Basecamp
+                  </option>
+
+                  <option value="Inne">
+                    Inne miejsce...
+                  </option>
                 </select>
               </label>
+
+              {/* WŁASNE MIEJSCE */}
+
+              {form.location === "Inne" && (
+                <label>
+                  <strong>
+                    Wpisz miejsce
+                  </strong>
+
+                  <input
+                    type="text"
+                    value={
+                      form.customLocation
+                    }
+                    onChange={(event) =>
+                      setForm({
+                        ...form,
+                        customLocation:
+                          event.target
+                            .value,
+                      })
+                    }
+                    placeholder="np. Orlik, Olszynki, szkoła..."
+                    style={inputStyle}
+                  />
+                </label>
+              )}
+
+              {/* GODZINA */}
 
               <label>
                 <strong>Godzina</strong>
@@ -754,13 +1334,16 @@ export default function Home() {
                   onChange={(event) =>
                     setForm({
                       ...form,
-                      time: event.target.value,
+                      time:
+                        event.target.value,
                     })
                   }
                   style={inputStyle}
                 >
-                  {TIMES.slice(0, -1).map((time) => (
-                    <option key={time}>{time}</option>
+                  {TIMES.map((time) => (
+                    <option key={time}>
+                      {time}
+                    </option>
                   ))}
                 </select>
               </label>
@@ -768,21 +1351,26 @@ export default function Home() {
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
+                  gridTemplateColumns:
+                    "1fr 1fr",
                   gap: 9,
                   marginTop: 5,
                 }}
               >
                 <button
                   style={styles.secondary}
-                  onClick={() => setModalOpen(false)}
+                  onClick={() =>
+                    setModalOpen(false)
+                  }
                 >
                   Anuluj
                 </button>
 
                 <button
                   style={styles.primary}
-                  onClick={saveReservation}
+                  onClick={
+                    saveReservation
+                  }
                 >
                   Zapisz rezerwację
                 </button>
@@ -792,13 +1380,18 @@ export default function Home() {
         </div>
       )}
 
+      {/* SZCZEGÓŁY */}
+
       {detailsOpen && (
         <div
-          onClick={() => setDetailsOpen(null)}
+          onClick={() =>
+            setDetailsOpen(null)
+          }
           style={{
             position: "fixed",
             inset: 0,
-            background: "rgba(10,20,15,.58)",
+            background:
+              "rgba(10,20,15,.58)",
             zIndex: 100,
             display: "flex",
             alignItems: "flex-end",
@@ -806,60 +1399,77 @@ export default function Home() {
           }}
         >
           <div
-            onClick={(event) => event.stopPropagation()}
+            onClick={(event) =>
+              event.stopPropagation()
+            }
             style={{
               background: "#f7f6f1",
               width: "100%",
               maxWidth: 600,
-              borderRadius: "26px 26px 0 0",
-              padding: "23px 18px 28px",
+              borderRadius:
+                "26px 26px 0 0",
+              padding:
+                "23px 18px 28px",
             }}
           >
             <div
               style={{
                 fontSize: 12,
                 color: "#6c756f",
-                textTransform: "uppercase",
+                textTransform:
+                  "uppercase",
                 fontWeight: 800,
               }}
             >
               Rezerwacja
             </div>
 
-            <h2>{detailsOpen.patrol}</h2>
+            <h2>
+              {detailsOpen.patrol}
+            </h2>
 
             <p>
               <strong>
                 {detailsOpen.time}–
-                {addMinutes(detailsOpen.time, 30)}
+                {addMinutes(
+                  detailsOpen.time,
+                  30
+                )}
               </strong>
+
               <br />
-              {detailsOpen.location}
+
+              📍 {detailsOpen.location}
+
               <br />
-              {detailsOpen.leader} • zastępowy / lider
+
+              {detailsOpen.leader} •
+              zastępowy / lider
             </p>
 
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "1fr 1fr",
+                gridTemplateColumns:
+                  "1fr 1fr",
                 gap: 9,
               }}
             >
               <button
                 style={styles.secondary}
-                onClick={() => setDetailsOpen(null)}
+                onClick={() =>
+                  setDetailsOpen(null)
+                }
               >
                 Zamknij
               </button>
 
               <button
-                style={{
-                  ...styles.primary,
-                  background: "#8b2635",
-                }}
+                style={styles.primary}
                 onClick={() =>
-                  removeReservation(detailsOpen.id)
+                  removeReservation(
+                    detailsOpen.id
+                  )
                 }
               >
                 Anuluj rezerwację
@@ -869,6 +1479,29 @@ export default function Home() {
         </div>
       )}
     </main>
+  );
+}
+
+function LegendDot({ color, label }) {
+  return (
+    <span
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+      }}
+    >
+      <span
+        style={{
+          width: 7,
+          height: 7,
+          background: color,
+          borderRadius: "50%",
+        }}
+      />
+
+      {label}
+    </span>
   );
 }
 
