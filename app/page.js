@@ -123,6 +123,18 @@ function availableTimesForDate(dateString) {
   });
 }
 
+function halfHourStarts(start, end) {
+  const result = [];
+  let current = start;
+
+  while (current < end) {
+    result.push(current);
+    current = addMinutes(current, 30);
+  }
+
+  return result;
+}
+
 const cardStyle = {
   background: "white",
   borderRadius: 18,
@@ -185,6 +197,30 @@ export default function Home() {
   const [patrols, setPatrols] = useState([]);
   const [reservations, setReservations] = useState([]);
 
+  const [events, setEvents] = useState([]);
+  const [myPatrolIds, setMyPatrolIds] = useState([]);
+
+  const [eventModalOpen, setEventModalOpen] = useState(false);
+  const [eventSaving, setEventSaving] = useState(false);
+  const [eventDetails, setEventDetails] = useState(null);
+
+  const [eventForm, setEventForm] = useState({
+    title: "",
+    eventType: "zbiórka",
+    audience: "whole",
+    patrolId: "",
+    date: "2026-09-28",
+    startTime: "17:30",
+    endTime: "19:30",
+    location: "Basecamp",
+    customLocation: "",
+    description: "",
+    bring: "",
+    hasPayment: false,
+    cost: "",
+    paymentDeadline: "",
+  });
+
   const [modalOpen, setModalOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -218,6 +254,7 @@ export default function Home() {
   useEffect(() => {
     if (session && role && role !== "parent") {
       loadSchedule();
+      loadEvents();
     }
   }, [session, role]);
 
@@ -269,7 +306,7 @@ export default function Home() {
         supabase
           .from("schedule_slots")
           .select(
-            "id, slot_date, start_time, end_time, location, notes, created_by"
+            "id, slot_date, start_time, end_time, location, notes, created_by, event_id"
           )
           .order("slot_date")
           .order("start_time"),
@@ -312,11 +349,29 @@ export default function Home() {
             notes: slot.notes,
             patrol: patrol?.name || "Zastęp",
             leader: patrol?.leader_name || "",
+            isEvent: false,
           };
         })
         .filter(Boolean);
 
-      setReservations(mapped);
+      const eventSlots = (slotData || [])
+        .filter((slot) => slot.event_id)
+        .map((slot) => ({
+          id: `event-${slot.id}`,
+          slotId: slot.id,
+          eventId: slot.event_id,
+          reservedBy: slot.created_by,
+          date: slot.slot_date,
+          time: normalizeTime(slot.start_time),
+          endTime: normalizeTime(slot.end_time),
+          location: slot.location,
+          notes: slot.notes,
+          patrol: slot.notes || "Wydarzenie",
+          leader: "wydarzenie drużyny",
+          isEvent: true,
+        }));
+
+      setReservations([...mapped, ...eventSlots]);
 
       if (!form.patrol && loadedPatrols.length > 0) {
         setForm((old) => ({
@@ -326,12 +381,239 @@ export default function Home() {
       }
     } catch (error) {
       console.error("Błąd pobierania grafiku:", error);
+
       alert(
         "Nie udało się pobrać Grafiku z bazy. Jeśli błąd się powtórzy, podeślij mi ekran."
       );
     } finally {
       setScheduleLoading(false);
     }
+  }
+
+  async function loadEvents() {
+    if (!session?.user) return;
+
+    try {
+      const [
+        { data: eventData, error: eventError },
+        { data: membershipData },
+      ] = await Promise.all([
+        supabase
+          .from("events")
+          .select(
+            "id,title,event_type,event_date,start_time,end_time,location,description,created_by,whole_troop,patrol_id,what_to_bring,cost,payment_deadline"
+          )
+          .order("event_date")
+          .order("start_time"),
+
+        supabase
+          .from("patrol_members")
+          .select("patrol_id")
+          .eq("user_id", session.user.id),
+      ]);
+
+      if (eventError) throw eventError;
+
+      setEvents(eventData || []);
+      setMyPatrolIds(
+        (membershipData || []).map((item) => Number(item.patrol_id))
+      );
+    } catch (error) {
+      console.error("Błąd pobierania wydarzeń:", error);
+      alert("Nie udało się pobrać wydarzeń.");
+    }
+  }
+
+  function openEventForm() {
+    setEventForm({
+      title: "",
+      eventType: "zbiórka",
+      audience: "whole",
+      patrolId: patrols[0]?.id ? String(patrols[0].id) : "",
+      date: selectedDate,
+      startTime: "17:30",
+      endTime: "19:30",
+      location: "Basecamp",
+      customLocation: "",
+      description: "",
+      bring: "",
+      hasPayment: false,
+      cost: "",
+      paymentDeadline: "",
+    });
+
+    setEventModalOpen(true);
+  }
+
+  async function saveEvent() {
+    if (!session?.user || role !== "admin") return;
+
+    const finalLocation =
+      eventForm.location === "Inne"
+        ? eventForm.customLocation.trim()
+        : eventForm.location;
+
+    if (!eventForm.title.trim()) {
+      alert("Wpisz nazwę wydarzenia.");
+      return;
+    }
+
+    if (!eventForm.date || !eventForm.startTime) {
+      alert("Uzupełnij datę i godzinę.");
+      return;
+    }
+
+    if (eventForm.endTime && eventForm.endTime <= eventForm.startTime) {
+      alert("Godzina zakończenia musi być późniejsza niż rozpoczęcia.");
+      return;
+    }
+
+    if (!finalLocation) {
+      alert("Wpisz miejsce wydarzenia.");
+      return;
+    }
+
+    if (eventForm.audience === "patrol" && !eventForm.patrolId) {
+      alert("Wybierz zastęp.");
+      return;
+    }
+
+    if (eventForm.hasPayment && !eventForm.cost.trim()) {
+      alert("Wpisz kwotę płatności.");
+      return;
+    }
+
+    setEventSaving(true);
+    let createdEventId = null;
+
+    try {
+      const reservesRoom = MAIN_LOCATIONS.includes(finalLocation);
+
+      const starts = reservesRoom
+        ? halfHourStarts(
+            eventForm.startTime,
+            eventForm.endTime || addMinutes(eventForm.startTime, 30)
+          )
+        : [];
+
+      if (reservesRoom) {
+        const { data: existingSlots, error: existingError } = await supabase
+          .from("schedule_slots")
+          .select("id,start_time,location")
+          .eq("slot_date", eventForm.date)
+          .eq("location", finalLocation);
+
+        if (existingError) throw existingError;
+
+        const occupiedTimes = new Set(
+          (existingSlots || []).map((slot) => normalizeTime(slot.start_time))
+        );
+
+        const conflict = starts.find((time) => occupiedTimes.has(time));
+
+        if (conflict) {
+          alert(
+            `${finalLocation} jest już zajęty ${eventForm.date} o ${conflict}. Wydarzenie nie zostało zapisane.`
+          );
+          return;
+        }
+      }
+
+      const { data: created, error: eventError } = await supabase
+        .from("events")
+        .insert({
+          title: eventForm.title.trim(),
+          event_type: eventForm.eventType,
+          event_date: eventForm.date,
+          start_time: `${eventForm.startTime}:00`,
+          end_time: eventForm.endTime
+            ? `${eventForm.endTime}:00`
+            : null,
+          location: finalLocation,
+          description: eventForm.description.trim() || null,
+          created_by: session.user.id,
+          whole_troop: eventForm.audience === "whole",
+          patrol_id:
+            eventForm.audience === "patrol"
+              ? Number(eventForm.patrolId)
+              : null,
+          what_to_bring: eventForm.bring.trim() || null,
+          cost: eventForm.hasPayment
+            ? eventForm.cost.trim()
+            : null,
+          payment_deadline:
+            eventForm.hasPayment && eventForm.paymentDeadline
+              ? eventForm.paymentDeadline
+              : null,
+        })
+        .select("id")
+        .single();
+
+      if (eventError) throw eventError;
+
+      createdEventId = created.id;
+
+      if (reservesRoom && starts.length > 0) {
+        const slotsToInsert = starts.map((time) => ({
+          slot_date: eventForm.date,
+          start_time: `${time}:00`,
+          end_time: `${addMinutes(time, 30)}:00`,
+          location: finalLocation,
+          notes: eventForm.title.trim(),
+          created_by: session.user.id,
+          event_id: created.id,
+        }));
+
+        const { error: slotError } = await supabase
+          .from("schedule_slots")
+          .insert(slotsToInsert);
+
+        if (slotError) throw slotError;
+      }
+
+      setEventModalOpen(false);
+
+      await Promise.all([loadEvents(), loadSchedule()]);
+    } catch (error) {
+      console.error("Błąd zapisu wydarzenia:", error);
+
+      if (createdEventId) {
+        await supabase
+          .from("events")
+          .delete()
+          .eq("id", createdEventId);
+      }
+
+      alert(
+        `Nie udało się zapisać wydarzenia.\n\n${error?.message || ""}`
+      );
+    } finally {
+      setEventSaving(false);
+    }
+  }
+
+  async function deleteEvent(eventItem) {
+    if (role !== "admin" || !eventItem?.id) return;
+
+    const confirmed = window.confirm(
+      `Usunąć wydarzenie „${eventItem.title}”?`
+    );
+
+    if (!confirmed) return;
+
+    const { error } = await supabase
+      .from("events")
+      .delete()
+      .eq("id", eventItem.id);
+
+    if (error) {
+      alert(`Nie udało się usunąć wydarzenia.\n\n${error.message}`);
+      return;
+    }
+
+    setEventDetails(null);
+
+    await Promise.all([loadEvents(), loadSchedule()]);
   }
 
   async function login(event) {
@@ -346,7 +628,9 @@ export default function Home() {
     });
 
     if (error) {
-      setLoginError("Nie udało się zalogować. Sprawdź e-mail i hasło.");
+      setLoginError(
+        "Nie udało się zalogować. Sprawdź e-mail i hasło."
+      );
     }
 
     setLoggingIn(false);
@@ -354,19 +638,27 @@ export default function Home() {
 
   async function logout() {
     await supabase.auth.signOut();
+
     setSession(null);
     setRole(null);
     setReservations([]);
+    setEvents([]);
+    setMyPatrolIds([]);
     setActiveTab("Grafik");
   }
 
   function openReservation(time = "17:30", location = "Nora") {
-    const firstPatrol = patrols[0]?.name || FALLBACK_PATROLS[0].name;
+    const firstPatrol =
+      patrols[0]?.name || FALLBACK_PATROLS[0].name;
 
     setForm({
       patrol: firstPatrol,
-      location: MAIN_LOCATIONS.includes(location) ? location : "Inne",
-      customLocation: MAIN_LOCATIONS.includes(location) ? "" : location,
+      location: MAIN_LOCATIONS.includes(location)
+        ? location
+        : "Inne",
+      customLocation: MAIN_LOCATIONS.includes(location)
+        ? ""
+        : location,
       time,
     });
 
@@ -391,7 +683,11 @@ export default function Home() {
   }
 
   function changeMonth(amount) {
-    const date = new Date(calendarYear, calendarMonth + amount, 1);
+    const date = new Date(
+      calendarYear,
+      calendarMonth + amount,
+      1
+    );
 
     setCalendarYear(date.getFullYear());
     setCalendarMonth(date.getMonth());
@@ -400,7 +696,9 @@ export default function Home() {
   async function saveReservation() {
     if (!session?.user) return;
 
-    const patrol = patrols.find((item) => item.name === form.patrol);
+    const patrol = patrols.find(
+      (item) => item.name === form.patrol
+    );
 
     if (!patrol?.id) {
       alert("Nie udało się znaleźć tego zastępu w bazie.");
@@ -433,7 +731,8 @@ export default function Home() {
       (item) =>
         item.date === selectedDate &&
         item.time === form.time &&
-        item.location.toLowerCase() === finalLocation.toLowerCase()
+        item.location.toLowerCase() ===
+          finalLocation.toLowerCase()
     );
 
     if (occupied) {
@@ -446,30 +745,32 @@ export default function Home() {
     try {
       let slotId;
 
-      const { data: existingSlots, error: findError } = await supabase
-        .from("schedule_slots")
-        .select("id")
-        .eq("slot_date", selectedDate)
-        .eq("start_time", `${form.time}:00`)
-        .eq("location", finalLocation)
-        .limit(1);
+      const { data: existingSlots, error: findError } =
+        await supabase
+          .from("schedule_slots")
+          .select("id")
+          .eq("slot_date", selectedDate)
+          .eq("start_time", `${form.time}:00`)
+          .eq("location", finalLocation)
+          .limit(1);
 
       if (findError) throw findError;
 
       if (existingSlots?.length) {
         slotId = existingSlots[0].id;
       } else {
-        const { data: newSlot, error: slotError } = await supabase
-          .from("schedule_slots")
-          .insert({
-            slot_date: selectedDate,
-            start_time: `${form.time}:00`,
-            end_time: `${addMinutes(form.time, 30)}:00`,
-            location: finalLocation,
-            created_by: session.user.id,
-          })
-          .select("id")
-          .single();
+        const { data: newSlot, error: slotError } =
+          await supabase
+            .from("schedule_slots")
+            .insert({
+              slot_date: selectedDate,
+              start_time: `${form.time}:00`,
+              end_time: `${addMinutes(form.time, 30)}:00`,
+              location: finalLocation,
+              created_by: session.user.id,
+            })
+            .select("id")
+            .single();
 
         if (slotError) throw slotError;
 
@@ -487,17 +788,24 @@ export default function Home() {
       if (reservationError) throw reservationError;
 
       setModalOpen(false);
+
       await loadSchedule();
     } catch (error) {
       console.error("Błąd zapisu:", error);
 
       if (
         error?.code === "23505" ||
-        String(error?.message || "").toLowerCase().includes("duplicate")
+        String(error?.message || "")
+          .toLowerCase()
+          .includes("duplicate")
       ) {
         alert("Ten termin został już zarezerwowany.");
       } else {
-        alert(`Nie udało się zapisać rezerwacji.\n\n${error?.message || ""}`);
+        alert(
+          `Nie udało się zapisać rezerwacji.\n\n${
+            error?.message || ""
+          }`
+        );
       }
     } finally {
       setSaving(false);
@@ -505,7 +813,7 @@ export default function Home() {
   }
 
   async function removeReservation(reservation) {
-    if (!reservation?.id) return;
+    if (!reservation?.id || reservation.isEvent) return;
 
     const confirmed = window.confirm(
       `Anulować rezerwację ${reservation.patrol} — ${reservation.time}, ${reservation.location}?`
@@ -525,6 +833,7 @@ export default function Home() {
       await loadSchedule();
     } catch (error) {
       console.error("Błąd usuwania:", error);
+
       alert(
         "Nie udało się anulować rezerwacji. Możesz usuwać własne rezerwacje, a administrator może usuwać wszystkie."
       );
@@ -570,7 +879,10 @@ export default function Home() {
     })
     .sort((a, b) => a.time.localeCompare(b.time));
 
-  const calendarDays = getCalendarDays(calendarYear, calendarMonth);
+  const calendarDays = getCalendarDays(
+    calendarYear,
+    calendarMonth
+  );
 
   const monthName = new Intl.DateTimeFormat("pl-PL", {
     month: "long",
@@ -579,10 +891,50 @@ export default function Home() {
 
   const validTimes = availableTimesForDate(selectedDate);
 
+  const today = dateToString(new Date());
+
+  const visibleEvents = events
+    .filter((item) => item.event_date >= today)
+    .filter((item) => {
+      if (role === "admin") return true;
+      if (item.whole_troop) return true;
+
+      return myPatrolIds.includes(Number(item.patrol_id));
+    });
+
+  const ownReservations = reservations.filter(
+    (item) =>
+      !item.isEvent &&
+      item.reservedBy === session.user.id &&
+      item.date >= today
+  );
+
+  const myItems = [
+    ...visibleEvents.map((item) => ({
+      kind: "event",
+      date: item.event_date,
+      time: normalizeTime(item.start_time),
+      data: item,
+    })),
+
+    ...ownReservations.map((item) => ({
+      kind: "reservation",
+      date: item.date,
+      time: item.time,
+      data: item,
+    })),
+  ].sort((a, b) =>
+    `${a.date}T${a.time}`.localeCompare(`${b.date}T${b.time}`)
+  );
+
   return (
     <main style={appStyle}>
       <AppHeader
-        subtitle={role === "admin" ? "Panel administratora" : "Centrum drużyny"}
+        subtitle={
+          role === "admin"
+            ? "Panel administratora"
+            : "Centrum drużyny"
+        }
         logout={logout}
       />
 
@@ -609,7 +961,9 @@ export default function Home() {
               }}
             >
               <div>
-                <div style={eyebrowStyle}>Grafik harcówki</div>
+                <div style={eyebrowStyle}>
+                  Grafik harcówki
+                </div>
 
                 <h2
                   style={{
@@ -622,7 +976,10 @@ export default function Home() {
                 </h2>
               </div>
 
-              <button style={primaryStyle} onClick={() => openReservation()}>
+              <button
+                style={primaryStyle}
+                onClick={() => openReservation()}
+              >
                 + Rezerwacja
               </button>
             </div>
@@ -637,7 +994,10 @@ export default function Home() {
                 marginBottom: 16,
               }}
             >
-              <button style={secondaryStyle} onClick={() => changeDay(-1)}>
+              <button
+                style={secondaryStyle}
+                onClick={() => changeDay(-1)}
+              >
                 ←
               </button>
 
@@ -648,7 +1008,9 @@ export default function Home() {
                   const value = event.target.value;
                   if (!value) return;
 
-                  const date = new Date(`${value}T12:00:00`);
+                  const date = new Date(
+                    `${value}T12:00:00`
+                  );
 
                   setSelectedDate(value);
                   setCalendarYear(date.getFullYear());
@@ -663,7 +1025,10 @@ export default function Home() {
                 }}
               />
 
-              <button style={secondaryStyle} onClick={() => changeDay(1)}>
+              <button
+                style={secondaryStyle}
+                onClick={() => changeDay(1)}
+              >
                 →
               </button>
             </div>
@@ -677,23 +1042,38 @@ export default function Home() {
                 marginBottom: 18,
               }}
             >
-              {["Wszystkie", "Nora", "Basecamp", "Inne"].map((location) => (
+              {[
+                "Wszystkie",
+                "Nora",
+                "Basecamp",
+                "Inne",
+              ].map((location) => (
                 <button
                   key={location}
-                  onClick={() => setLocationFilter(location)}
+                  onClick={() =>
+                    setLocationFilter(location)
+                  }
                   style={{
                     border:
                       locationFilter === location
                         ? "1px solid #173b2b"
                         : "1px solid #d5d9d5",
                     background:
-                      locationFilter === location ? "#173b2b" : "white",
-                    color: locationFilter === location ? "white" : "#273b31",
+                      locationFilter === location
+                        ? "#173b2b"
+                        : "white",
+                    color:
+                      locationFilter === location
+                        ? "white"
+                        : "#273b31",
                     borderRadius: 30,
                     padding: "9px 16px",
                     whiteSpace: "nowrap",
                     cursor: "pointer",
-                    fontWeight: locationFilter === location ? 700 : 500,
+                    fontWeight:
+                      locationFilter === location
+                        ? 700
+                        : 500,
                   }}
                 >
                   {location}
@@ -714,32 +1094,48 @@ export default function Home() {
               </div>
             )}
 
-            {!scheduleLoading && dayReservations.length === 0 && (
-              <div
-                style={{
-                  ...cardStyle,
-                  textAlign: "center",
-                  color: "#68736d",
-                  marginBottom: 12,
-                }}
-              >
-                Brak rezerwacji na ten dzień.
-              </div>
-            )}
+            {!scheduleLoading &&
+              dayReservations.length === 0 && (
+                <div
+                  style={{
+                    ...cardStyle,
+                    textAlign: "center",
+                    color: "#68736d",
+                    marginBottom: 12,
+                  }}
+                >
+                  Brak rezerwacji na ten dzień.
+                </div>
+              )}
 
             <div style={{ display: "grid", gap: 10 }}>
               {dayReservations.map((reservation) => (
                 <button
                   key={reservation.id}
-                  onClick={() => setDetailsOpen(reservation)}
+                  onClick={() => {
+                    if (reservation.isEvent) {
+                      const found = events.find(
+                        (item) =>
+                          Number(item.id) ===
+                          Number(reservation.eventId)
+                      );
+
+                      if (found) setEventDetails(found);
+                    } else {
+                      setDetailsOpen(reservation);
+                    }
+                  }}
                   style={{
                     ...cardStyle,
                     width: "100%",
                     border: 0,
-                    borderLeft: "5px solid #8b2635",
+                    borderLeft: reservation.isEvent
+                      ? "5px solid #607b54"
+                      : "5px solid #8b2635",
                     textAlign: "left",
                     display: "grid",
-                    gridTemplateColumns: "minmax(90px,110px) 1fr auto",
+                    gridTemplateColumns:
+                      "minmax(90px,110px) 1fr auto",
                     alignItems: "center",
                     gap: 12,
                     cursor: "pointer",
@@ -747,11 +1143,18 @@ export default function Home() {
                   }}
                 >
                   <strong>
-                    {reservation.time}–{reservation.endTime || addMinutes(reservation.time, 30)}
+                    {reservation.time}–
+                    {reservation.endTime ||
+                      addMinutes(reservation.time, 30)}
                   </strong>
 
                   <div>
-                    <div style={{ fontSize: 17, fontWeight: 800 }}>
+                    <div
+                      style={{
+                        fontSize: 17,
+                        fontWeight: 800,
+                      }}
+                    >
                       {reservation.patrol}
                     </div>
 
@@ -762,7 +1165,10 @@ export default function Home() {
                         marginTop: 3,
                       }}
                     >
-                      {reservation.leader || "lider zastępu"}
+                      {reservation.isEvent
+                        ? "wydarzenie"
+                        : reservation.leader ||
+                          "lider zastępu"}
                     </div>
                   </div>
 
@@ -780,8 +1186,9 @@ export default function Home() {
                 </button>
               ))}
             </div>
-
-            <h3 style={{ margin: "26px 0 10px" }}>Wolne terminy</h3>
+            <h3 style={{ margin: "26px 0 10px" }}>
+              Wolne terminy
+            </h3>
 
             <div style={{ display: "grid", gap: 8 }}>
               {locationFilter !== "Inne" &&
@@ -832,7 +1239,9 @@ export default function Home() {
 
                         <button
                           style={secondaryStyle}
-                          onClick={() => openReservation(time, location)}
+                          onClick={() =>
+                            openReservation(time, location)
+                          }
                         >
                           Zarezerwuj
                         </button>
@@ -842,7 +1251,12 @@ export default function Home() {
                 })}
 
               <button
-                onClick={() => openReservation(validTimes[0] || "17:30", "Inne miejsce")}
+                onClick={() =>
+                  openReservation(
+                    validTimes[0] || "17:30",
+                    "Inne miejsce"
+                  )
+                }
                 style={{
                   border: "2px dashed #b98a2f",
                   borderRadius: 16,
@@ -860,10 +1274,194 @@ export default function Home() {
         )}
 
         {activeTab === "Moje" && (
-          <SimplePage
-            title="Moje"
-            text="Twoje zbiórki, wyjazdy, rezerwacje i zadania będą tutaj."
-          />
+          <>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: 12,
+                marginBottom: 18,
+                flexWrap: "wrap",
+              }}
+            >
+              <div>
+                <div style={eyebrowStyle}>
+                  Twoje centrum
+                </div>
+
+                <h2 style={{ margin: "4px 0 0" }}>
+                  Co mnie czeka?
+                </h2>
+              </div>
+
+              {role === "admin" && (
+                <button
+                  style={primaryStyle}
+                  onClick={openEventForm}
+                >
+                  + Wydarzenie
+                </button>
+              )}
+            </div>
+
+            {myItems.length === 0 && (
+              <div
+                style={{
+                  ...cardStyle,
+                  color: "#68736d",
+                  textAlign: "center",
+                }}
+              >
+                Na razie nic tutaj nie ma.
+              </div>
+            )}
+
+            <div style={{ display: "grid", gap: 12 }}>
+              {myItems.map((item) => {
+                if (item.kind === "reservation") {
+                  const reservation = item.data;
+
+                  return (
+                    <button
+                      key={`reservation-${reservation.id}`}
+                      onClick={() =>
+                        setDetailsOpen(reservation)
+                      }
+                      style={{
+                        ...cardStyle,
+                        border: 0,
+                        borderLeft: "5px solid #b98a2f",
+                        textAlign: "left",
+                        cursor: "pointer",
+                        color: "#17231c",
+                      }}
+                    >
+                      <div style={eyebrowStyle}>
+                        MOJA REZERWACJA
+                      </div>
+
+                      <h3
+                        style={{
+                          margin: "7px 0 8px",
+                          fontSize: 19,
+                        }}
+                      >
+                        {reservation.patrol}
+                      </h3>
+
+                      <div
+                        style={{
+                          lineHeight: 1.7,
+                          color: "#526159",
+                        }}
+                      >
+                        📅 {formatDate(reservation.date)}
+                        <br />
+                        🕐 {reservation.time}–
+                        {reservation.endTime ||
+                          addMinutes(
+                            reservation.time,
+                            30
+                          )}
+                        <br />
+                        📍 {reservation.location}
+                      </div>
+                    </button>
+                  );
+                }
+
+                const eventItem = item.data;
+
+                const patrol = patrols.find(
+                  (patrolItem) =>
+                    Number(patrolItem.id) ===
+                    Number(eventItem.patrol_id)
+                );
+
+                return (
+                  <button
+                    key={`event-${eventItem.id}`}
+                    onClick={() =>
+                      setEventDetails(eventItem)
+                    }
+                    style={{
+                      ...cardStyle,
+                      border: 0,
+                      borderLeft: eventItem.whole_troop
+                        ? "5px solid #8b2635"
+                        : "5px solid #607b54",
+                      textAlign: "left",
+                      cursor: "pointer",
+                      color: "#17231c",
+                    }}
+                  >
+                    <div style={eyebrowStyle}>
+                      {eventItem.whole_troop
+                        ? "CAŁA DRUŻYNA"
+                        : role === "admin"
+                        ? `ZASTĘP • ${
+                            patrol?.name || "Zastęp"
+                          }`
+                        : "TWÓJ ZASTĘP"}
+                    </div>
+
+                    <h3
+                      style={{
+                        margin: "7px 0 8px",
+                        fontSize: 19,
+                      }}
+                    >
+                      {eventItem.title}
+                    </h3>
+
+                    <div
+                      style={{
+                        lineHeight: 1.7,
+                        color: "#526159",
+                      }}
+                    >
+                      📅 {formatDate(
+                        eventItem.event_date
+                      )}
+                      <br />
+
+                      🕐 {normalizeTime(
+                        eventItem.start_time
+                      )}
+                      {eventItem.end_time
+                        ? `–${normalizeTime(
+                            eventItem.end_time
+                          )}`
+                        : ""}
+                      <br />
+
+                      📍 {eventItem.location}
+
+                      {eventItem.what_to_bring && (
+                        <>
+                          <br />
+                          🎒 {eventItem.what_to_bring}
+                        </>
+                      )}
+
+                      {eventItem.cost && (
+                        <>
+                          <br />
+                          💰 {eventItem.cost}
+                          {eventItem.payment_deadline
+                            ? ` • do ${formatDate(
+                                eventItem.payment_deadline
+                              )}`
+                            : ""}
+                        </>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </>
         )}
 
         {activeTab === "Wyjazdy" && (
@@ -885,41 +1483,654 @@ export default function Home() {
             <h2>Więcej</h2>
 
             <div style={{ display: "grid", gap: 10 }}>
-              {["Ogłoszenia", "Kadra", "Dokumenty", "Ustawienia"].map(
-                (item) => (
-                  <button
-                    key={item}
-                    style={{
-                      ...cardStyle,
-                      border: 0,
-                      textAlign: "left",
-                      fontWeight: 800,
-                      fontSize: 16,
-                      cursor: "pointer",
-                      color: "#17231c",
-                    }}
-                    onClick={() => alert(`${item} — moduł podepniemy później.`)}
-                  >
-                    {item} →
-                  </button>
-                )
-              )}
+              {[
+                "Ogłoszenia",
+                "Kadra",
+                "Dokumenty",
+                "Ustawienia",
+              ].map((item) => (
+                <button
+                  key={item}
+                  style={{
+                    ...cardStyle,
+                    border: 0,
+                    textAlign: "left",
+                    fontWeight: 800,
+                    fontSize: 16,
+                    cursor: "pointer",
+                    color: "#17231c",
+                  }}
+                  onClick={() =>
+                    alert(
+                      `${item} — moduł podepniemy później.`
+                    )
+                  }
+                >
+                  {item} →
+                </button>
+              ))}
             </div>
           </>
         )}
       </section>
 
       <BottomNav
-        tabs={["Grafik", "Moje", "Wyjazdy", "Zadania", "Więcej"]}
+        tabs={[
+          "Grafik",
+          "Moje",
+          "Wyjazdy",
+          "Zadania",
+          "Więcej",
+        ]}
         activeTab={activeTab}
         setActiveTab={setActiveTab}
       />
 
-      {modalOpen && (
-        <ModalBackground close={() => !saving && setModalOpen(false)}>
-          <h2 style={{ marginTop: 0 }}>Nowa rezerwacja</h2>
+      {eventModalOpen && (
+        <ModalBackground
+          close={() =>
+            !eventSaving && setEventModalOpen(false)
+          }
+        >
+          <div style={eyebrowStyle}>
+            Panel administratora
+          </div>
 
-          <p style={{ color: "#69746d", marginTop: -8 }}>
+          <h2 style={{ marginTop: 5 }}>
+            Nowe wydarzenie
+          </h2>
+
+          <p
+            style={{
+              color: "#69746d",
+              marginTop: -5,
+              lineHeight: 1.5,
+            }}
+          >
+            Dodaj zbiórkę, służbę, wyjazd lub inne
+            wydarzenie drużyny.
+          </p>
+
+          <div style={{ display: "grid", gap: 15 }}>
+            <label>
+              <strong>Nazwa wydarzenia</strong>
+
+              <input
+                type="text"
+                value={eventForm.title}
+                onChange={(event) =>
+                  setEventForm({
+                    ...eventForm,
+                    title: event.target.value,
+                  })
+                }
+                placeholder="np. Zbiórka drużyny"
+                style={inputStyle}
+              />
+            </label>
+
+            <label>
+              <strong>Typ</strong>
+
+              <select
+                value={eventForm.eventType}
+                onChange={(event) =>
+                  setEventForm({
+                    ...eventForm,
+                    eventType: event.target.value,
+                  })
+                }
+                style={inputStyle}
+              >
+                <option value="zbiórka">
+                  Zbiórka
+                </option>
+
+                <option value="wydarzenie">
+                  Wydarzenie
+                </option>
+
+                <option value="służba">
+                  Służba
+                </option>
+
+                <option value="wyjazd">
+                  Wyjazd
+                </option>
+
+                <option value="biwak">
+                  Biwak
+                </option>
+
+                <option value="rajd">
+                  Rajd
+                </option>
+
+                <option value="zawody">
+                  Zawody
+                </option>
+
+                <option value="inne">
+                  Inne
+                </option>
+              </select>
+            </label>
+
+            <label>
+              <strong>Dla kogo?</strong>
+
+              <select
+                value={eventForm.audience}
+                onChange={(event) =>
+                  setEventForm({
+                    ...eventForm,
+                    audience: event.target.value,
+                  })
+                }
+                style={inputStyle}
+              >
+                <option value="whole">
+                  Cała drużyna
+                </option>
+
+                <option value="patrol">
+                  Konkretny zastęp
+                </option>
+              </select>
+            </label>
+
+            {eventForm.audience === "patrol" && (
+              <label>
+                <strong>Zastęp</strong>
+
+                <select
+                  value={eventForm.patrolId}
+                  onChange={(event) =>
+                    setEventForm({
+                      ...eventForm,
+                      patrolId: event.target.value,
+                    })
+                  }
+                  style={inputStyle}
+                >
+                  {patrols.map((patrol) => (
+                    <option
+                      key={patrol.id}
+                      value={patrol.id}
+                    >
+                      {patrol.name} —{" "}
+                      {patrol.leader_name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+
+            <label>
+              <strong>Data</strong>
+
+              <input
+                type="date"
+                value={eventForm.date}
+                onChange={(event) =>
+                  setEventForm({
+                    ...eventForm,
+                    date: event.target.value,
+                  })
+                }
+                style={inputStyle}
+              />
+            </label>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 10,
+              }}
+            >
+              <label>
+                <strong>Od</strong>
+
+                <input
+                  type="time"
+                  step="1800"
+                  value={eventForm.startTime}
+                  onChange={(event) =>
+                    setEventForm({
+                      ...eventForm,
+                      startTime: event.target.value,
+                    })
+                  }
+                  style={inputStyle}
+                />
+              </label>
+
+              <label>
+                <strong>Do</strong>
+
+                <input
+                  type="time"
+                  step="1800"
+                  value={eventForm.endTime}
+                  onChange={(event) =>
+                    setEventForm({
+                      ...eventForm,
+                      endTime: event.target.value,
+                    })
+                  }
+                  style={inputStyle}
+                />
+              </label>
+            </div>
+
+            <label>
+              <strong>Miejsce</strong>
+
+              <select
+                value={eventForm.location}
+                onChange={(event) =>
+                  setEventForm({
+                    ...eventForm,
+                    location: event.target.value,
+                    customLocation:
+                      event.target.value === "Inne"
+                        ? eventForm.customLocation
+                        : "",
+                  })
+                }
+                style={inputStyle}
+              >
+                <option value="Nora">Nora</option>
+
+                <option value="Basecamp">
+                  Basecamp
+                </option>
+
+                <option value="Inne">
+                  Inne miejsce...
+                </option>
+              </select>
+            </label>
+
+            {eventForm.location === "Inne" && (
+              <label>
+                <strong>Wpisz miejsce</strong>
+
+                <input
+                  type="text"
+                  value={eventForm.customLocation}
+                  onChange={(event) =>
+                    setEventForm({
+                      ...eventForm,
+                      customLocation:
+                        event.target.value,
+                    })
+                  }
+                  placeholder="np. Olszynki, Orlik, las Zamość..."
+                  style={inputStyle}
+                />
+              </label>
+            )}
+
+            <label>
+              <strong>Opis</strong>
+
+              <textarea
+                value={eventForm.description}
+                onChange={(event) =>
+                  setEventForm({
+                    ...eventForm,
+                    description: event.target.value,
+                  })
+                }
+                placeholder="Co robimy? Najważniejsze informacje..."
+                rows={4}
+                style={{
+                  ...inputStyle,
+                  resize: "vertical",
+                  fontFamily: "inherit",
+                }}
+              />
+            </label>
+
+            <label>
+              <strong>Co zabrać?</strong>
+
+              <textarea
+                value={eventForm.bring}
+                onChange={(event) =>
+                  setEventForm({
+                    ...eventForm,
+                    bring: event.target.value,
+                  })
+                }
+                placeholder="np. mundur, latarka, woda..."
+                rows={3}
+                style={{
+                  ...inputStyle,
+                  resize: "vertical",
+                  fontFamily: "inherit",
+                }}
+              />
+            </label>
+
+            {role === "admin" && (
+              <div
+                style={{
+                  ...cardStyle,
+                  background: "#faf8f0",
+                  boxShadow: "none",
+                  border: "1px solid #e5dfcc",
+                }}
+              >
+                <label
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    cursor: "pointer",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={eventForm.hasPayment}
+                    onChange={(event) =>
+                      setEventForm({
+                        ...eventForm,
+                        hasPayment:
+                          event.target.checked,
+                        cost: event.target.checked
+                          ? eventForm.cost
+                          : "",
+                        paymentDeadline:
+                          event.target.checked
+                            ? eventForm.paymentDeadline
+                            : "",
+                      })
+                    }
+                    style={{
+                      width: 19,
+                      height: 19,
+                    }}
+                  />
+
+                  <div>
+                    <strong>Dodać płatność?</strong>
+
+                    <div
+                      style={{
+                        fontSize: 13,
+                        color: "#68736d",
+                        marginTop: 3,
+                      }}
+                    >
+                      Włącz tylko wtedy, gdy to
+                      wydarzenie jest płatne.
+                    </div>
+                  </div>
+                </label>
+
+                {eventForm.hasPayment && (
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns:
+                        "1fr 1fr",
+                      gap: 10,
+                      marginTop: 15,
+                    }}
+                  >
+                    <label>
+                      <strong>Kwota</strong>
+
+                      <input
+                        type="text"
+                        value={eventForm.cost}
+                        onChange={(event) =>
+                          setEventForm({
+                            ...eventForm,
+                            cost: event.target.value,
+                          })
+                        }
+                        placeholder="np. 35 zł"
+                        style={inputStyle}
+                      />
+                    </label>
+
+                    <label>
+                      <strong>
+                        Termin płatności
+                      </strong>
+
+                      <input
+                        type="date"
+                        value={
+                          eventForm.paymentDeadline
+                        }
+                        onChange={(event) =>
+                          setEventForm({
+                            ...eventForm,
+                            paymentDeadline:
+                              event.target.value,
+                          })
+                        }
+                        style={inputStyle}
+                      />
+                    </label>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 9,
+              }}
+            >
+              <button
+                style={secondaryStyle}
+                disabled={eventSaving}
+                onClick={() =>
+                  setEventModalOpen(false)
+                }
+              >
+                Anuluj
+              </button>
+
+              <button
+                style={{
+                  ...primaryStyle,
+                  opacity: eventSaving ? 0.6 : 1,
+                }}
+                disabled={eventSaving}
+                onClick={saveEvent}
+              >
+                {eventSaving
+                  ? "Zapisuję..."
+                  : "Dodaj wydarzenie"}
+              </button>
+            </div>
+          </div>
+        </ModalBackground>
+      )}
+
+      {eventDetails && (
+        <ModalBackground
+          close={() => setEventDetails(null)}
+        >
+          <div style={eyebrowStyle}>
+            {eventDetails.whole_troop
+              ? "CAŁA DRUŻYNA"
+              : "WYDARZENIE ZASTĘPU"}
+          </div>
+
+          <h2 style={{ marginBottom: 8 }}>
+            {eventDetails.title}
+          </h2>
+
+          <div
+            style={{
+              lineHeight: 1.8,
+              color: "#526159",
+            }}
+          >
+            📅 {formatDate(eventDetails.event_date)}
+            <br />
+
+            🕐 {normalizeTime(
+              eventDetails.start_time
+            )}
+            {eventDetails.end_time
+              ? `–${normalizeTime(
+                  eventDetails.end_time
+                )}`
+              : ""}
+            <br />
+
+            📍 {eventDetails.location}
+          </div>
+
+          {eventDetails.description && (
+            <div
+              style={{
+                ...cardStyle,
+                boxShadow: "none",
+                background: "#edf1ed",
+                marginTop: 16,
+              }}
+            >
+              <strong>Informacje</strong>
+
+              <p
+                style={{
+                  marginBottom: 0,
+                  lineHeight: 1.6,
+                }}
+              >
+                {eventDetails.description}
+              </p>
+            </div>
+          )}
+
+          {eventDetails.what_to_bring && (
+            <div
+              style={{
+                ...cardStyle,
+                boxShadow: "none",
+                marginTop: 12,
+              }}
+            >
+              <strong>🎒 Co zabrać?</strong>
+
+              <p
+                style={{
+                  marginBottom: 0,
+                  lineHeight: 1.6,
+                }}
+              >
+                {eventDetails.what_to_bring}
+              </p>
+            </div>
+          )}
+
+          {eventDetails.cost && (
+            <div
+              style={{
+                ...cardStyle,
+                boxShadow: "none",
+                background: "#fff9e9",
+                border: "1px solid #ead8a7",
+                marginTop: 12,
+              }}
+            >
+              <div style={eyebrowStyle}>
+                PŁATNOŚĆ
+              </div>
+
+              <h3
+                style={{
+                  margin: "6px 0",
+                  fontSize: 21,
+                }}
+              >
+                {eventDetails.cost}
+              </h3>
+
+              {eventDetails.payment_deadline && (
+                <div style={{ color: "#6d6041" }}>
+                  Termin:{" "}
+                  {formatDate(
+                    eventDetails.payment_deadline
+                  )}
+                </div>
+              )}
+
+              {role === "admin" && (
+                <div
+                  style={{
+                    marginTop: 12,
+                    fontSize: 13,
+                    color: "#756b53",
+                  }}
+                >
+                  Statusy „zapłacone / nie
+                  zapłacone” pojawią się tutaj po
+                  dodaniu członków drużyny do
+                  aplikacji.
+                </div>
+              )}
+            </div>
+          )}
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns:
+                role === "admin" ? "1fr 1fr" : "1fr",
+              gap: 9,
+              marginTop: 18,
+            }}
+          >
+            <button
+              style={secondaryStyle}
+              onClick={() => setEventDetails(null)}
+            >
+              Zamknij
+            </button>
+
+            {role === "admin" && (
+              <button
+                style={primaryStyle}
+                onClick={() =>
+                  deleteEvent(eventDetails)
+                }
+              >
+                Usuń wydarzenie
+              </button>
+            )}
+          </div>
+        </ModalBackground>
+      )}
+
+      {modalOpen && (
+        <ModalBackground
+          close={() =>
+            !saving && setModalOpen(false)
+          }
+        >
+          <h2 style={{ marginTop: 0 }}>
+            Nowa rezerwacja
+          </h2>
+
+          <p
+            style={{
+              color: "#69746d",
+              marginTop: -8,
+            }}
+          >
             {formatDate(selectedDate)}
           </p>
 
@@ -930,13 +2141,20 @@ export default function Home() {
               <select
                 value={form.patrol}
                 onChange={(event) =>
-                  setForm({ ...form, patrol: event.target.value })
+                  setForm({
+                    ...form,
+                    patrol: event.target.value,
+                  })
                 }
                 style={inputStyle}
               >
                 {patrols.map((patrol) => (
-                  <option key={patrol.id} value={patrol.name}>
-                    {patrol.name} — {patrol.leader_name}
+                  <option
+                    key={patrol.id}
+                    value={patrol.name}
+                  >
+                    {patrol.name} —{" "}
+                    {patrol.leader_name}
                   </option>
                 ))}
               </select>
@@ -960,8 +2178,14 @@ export default function Home() {
                 style={inputStyle}
               >
                 <option value="Nora">Nora</option>
-                <option value="Basecamp">Basecamp</option>
-                <option value="Inne">Inne miejsce...</option>
+
+                <option value="Basecamp">
+                  Basecamp
+                </option>
+
+                <option value="Inne">
+                  Inne miejsce...
+                </option>
               </select>
             </label>
 
@@ -975,7 +2199,8 @@ export default function Home() {
                   onChange={(event) =>
                     setForm({
                       ...form,
-                      customLocation: event.target.value,
+                      customLocation:
+                        event.target.value,
                     })
                   }
                   placeholder="np. Orlik, Olszynki, szkoła..."
@@ -990,7 +2215,10 @@ export default function Home() {
               <select
                 value={form.time}
                 onChange={(event) =>
-                  setForm({ ...form, time: event.target.value })
+                  setForm({
+                    ...form,
+                    time: event.target.value,
+                  })
                 }
                 style={inputStyle}
               >
@@ -1012,7 +2240,9 @@ export default function Home() {
               <button
                 style={secondaryStyle}
                 disabled={saving}
-                onClick={() => setModalOpen(false)}
+                onClick={() =>
+                  setModalOpen(false)
+                }
               >
                 Anuluj
               </button>
@@ -1025,7 +2255,9 @@ export default function Home() {
                 disabled={saving}
                 onClick={saveReservation}
               >
-                {saving ? "Zapisuję..." : "Zapisz rezerwację"}
+                {saving
+                  ? "Zapisuję..."
+                  : "Zapisz rezerwację"}
               </button>
             </div>
           </div>
@@ -1033,7 +2265,9 @@ export default function Home() {
       )}
 
       {detailsOpen && (
-        <ModalBackground close={() => setDetailsOpen(null)}>
+        <ModalBackground
+          close={() => setDetailsOpen(null)}
+        >
           <div style={eyebrowStyle}>Rezerwacja</div>
 
           <h2>{detailsOpen.patrol}</h2>
@@ -1041,12 +2275,15 @@ export default function Home() {
           <p style={{ lineHeight: 1.7 }}>
             <strong>
               {detailsOpen.time}–
-              {detailsOpen.endTime || addMinutes(detailsOpen.time, 30)}
+              {detailsOpen.endTime ||
+                addMinutes(detailsOpen.time, 30)}
             </strong>
             <br />
             📍 {detailsOpen.location}
             <br />
-            👤 {detailsOpen.leader || "lider zastępu"}
+            👤{" "}
+            {detailsOpen.leader ||
+              "lider zastępu"}
           </p>
 
           <div
@@ -1058,14 +2295,18 @@ export default function Home() {
           >
             <button
               style={secondaryStyle}
-              onClick={() => setDetailsOpen(null)}
+              onClick={() =>
+                setDetailsOpen(null)
+              }
             >
               Zamknij
             </button>
 
             <button
               style={primaryStyle}
-              onClick={() => removeReservation(detailsOpen)}
+              onClick={() =>
+                removeReservation(detailsOpen)
+              }
             >
               Anuluj rezerwację
             </button>
@@ -1075,7 +2316,6 @@ export default function Home() {
     </main>
   );
 }
-
 function LoginScreen({
   email,
   setEmail,
@@ -1122,29 +2362,44 @@ function LoginScreen({
           Centrum Dowodzenia
         </h1>
 
-        <p style={{ color: "#68736d", marginTop: 0, marginBottom: 25 }}>
+        <p
+          style={{
+            color: "#68736d",
+            marginTop: 0,
+            marginBottom: 25,
+          }}
+        >
           Zaloguj się do swojej części drużyny.
         </p>
 
-        <form onSubmit={login} style={{ display: "grid", gap: 15 }}>
+        <form
+          onSubmit={login}
+          style={{ display: "grid", gap: 15 }}
+        >
           <label>
             <strong>E-mail</strong>
+
             <input
               type="email"
               required
               value={email}
-              onChange={(event) => setEmail(event.target.value)}
+              onChange={(event) =>
+                setEmail(event.target.value)
+              }
               style={inputStyle}
             />
           </label>
 
           <label>
             <strong>Hasło</strong>
+
             <input
               type="password"
               required
               value={password}
-              onChange={(event) => setPassword(event.target.value)}
+              onChange={(event) =>
+                setPassword(event.target.value)
+              }
               style={inputStyle}
             />
           </label>
@@ -1186,13 +2441,21 @@ function ParentApp({ logout }) {
 
   return (
     <main style={appStyle}>
-      <AppHeader subtitle="Strefa rodzica" logout={logout} />
+      <AppHeader
+        subtitle="Strefa rodzica"
+        logout={logout}
+      />
 
       <section style={containerPadding}>
         {tab === "Moje" && (
           <>
-            <div style={eyebrowStyle}>Najważniejsze informacje</div>
-            <h2 style={{ marginTop: 5 }}>Co, kiedy i gdzie?</h2>
+            <div style={eyebrowStyle}>
+              Najważniejsze informacje
+            </div>
+
+            <h2 style={{ marginTop: 5 }}>
+              Co, kiedy i gdzie?
+            </h2>
 
             <div style={{ display: "grid", gap: 12 }}>
               {PARENT_EVENTS.map((event) => (
@@ -1203,8 +2466,12 @@ function ParentApp({ logout }) {
                     borderLeft: "5px solid #8b2635",
                   }}
                 >
-                  <div style={eyebrowStyle}>{event.type}</div>
+                  <div style={eyebrowStyle}>
+                    {event.type}
+                  </div>
+
                   <h3>{event.title}</h3>
+
                   <div style={{ lineHeight: 1.7 }}>
                     📅 {formatDate(event.date)}
                     <br />
@@ -1213,9 +2480,11 @@ function ParentApp({ logout }) {
                     📍 {event.location}
                     <br />
                     🎒 {event.bring}
+
                     {event.cost && (
                       <>
-                        <br />💰 {event.cost}
+                        <br />
+                        💰 {event.cost}
                       </>
                     )}
                   </div>
@@ -1258,7 +2527,13 @@ function MonthlyCalendar({
   selectCalendarDay,
 }) {
   return (
-    <div style={{ ...cardStyle, marginBottom: 22, padding: 18 }}>
+    <div
+      style={{
+        ...cardStyle,
+        marginBottom: 22,
+        padding: 18,
+      }}
+    >
       <div
         style={{
           display: "flex",
@@ -1267,15 +2542,26 @@ function MonthlyCalendar({
           marginBottom: 18,
         }}
       >
-        <button style={secondaryStyle} onClick={() => changeMonth(-1)}>
+        <button
+          style={secondaryStyle}
+          onClick={() => changeMonth(-1)}
+        >
           ←
         </button>
 
-        <strong style={{ textTransform: "capitalize", fontSize: 18 }}>
+        <strong
+          style={{
+            textTransform: "capitalize",
+            fontSize: 18,
+          }}
+        >
           {monthName}
         </strong>
 
-        <button style={secondaryStyle} onClick={() => changeMonth(1)}>
+        <button
+          style={secondaryStyle}
+          onClick={() => changeMonth(1)}
+        >
           →
         </button>
       </div>
@@ -1287,7 +2573,15 @@ function MonthlyCalendar({
           textAlign: "center",
         }}
       >
-        {["Pon", "Wt", "Śr", "Czw", "Pt", "Sob", "Nd"].map((day) => (
+        {[
+          "Pon",
+          "Wt",
+          "Śr",
+          "Czw",
+          "Pt",
+          "Sob",
+          "Nd",
+        ].map((day) => (
           <div
             key={day}
             style={{
@@ -1303,18 +2597,32 @@ function MonthlyCalendar({
 
         {calendarDays.map((date, index) => {
           if (!date) {
-            return <div key={`empty-${index}`} style={{ minHeight: 55 }} />;
+            return (
+              <div
+                key={`empty-${index}`}
+                style={{ minHeight: 55 }}
+              />
+            );
           }
 
           const value = dateToString(date);
           const selected = value === selectedDate;
 
-          const items = reservations.filter((item) => item.date === value);
+          const items = reservations.filter(
+            (item) => item.date === value
+          );
 
-          const nora = items.some((item) => item.location === "Nora");
-          const basecamp = items.some((item) => item.location === "Basecamp");
+          const nora = items.some(
+            (item) => item.location === "Nora"
+          );
+
+          const basecamp = items.some(
+            (item) => item.location === "Basecamp"
+          );
+
           const other = items.some(
-            (item) => !MAIN_LOCATIONS.includes(item.location)
+            (item) =>
+              !MAIN_LOCATIONS.includes(item.location)
           );
 
           return (
@@ -1323,8 +2631,12 @@ function MonthlyCalendar({
               onClick={() => selectCalendarDay(date)}
               style={{
                 border: 0,
-                background: selected ? "#173b2b" : "transparent",
-                color: selected ? "white" : "#17231c",
+                background: selected
+                  ? "#173b2b"
+                  : "transparent",
+                color: selected
+                  ? "white"
+                  : "#17231c",
                 borderRadius: 14,
                 minHeight: 55,
                 cursor: "pointer",
@@ -1342,11 +2654,35 @@ function MonthlyCalendar({
                   marginTop: 4,
                 }}
               >
-                {nora && <Dot color={selected ? "#f1a5ae" : "#9d293b"} />}
-                {basecamp && (
-                  <Dot color={selected ? "#bcd3b2" : "#607b54"} />
+                {nora && (
+                  <Dot
+                    color={
+                      selected
+                        ? "#f1a5ae"
+                        : "#9d293b"
+                    }
+                  />
                 )}
-                {other && <Dot color={selected ? "#f3d899" : "#b98a2f"} />}
+
+                {basecamp && (
+                  <Dot
+                    color={
+                      selected
+                        ? "#bcd3b2"
+                        : "#607b54"
+                    }
+                  />
+                )}
+
+                {other && (
+                  <Dot
+                    color={
+                      selected
+                        ? "#f3d899"
+                        : "#b98a2f"
+                    }
+                  />
+                )}
               </div>
             </button>
           );
@@ -1365,9 +2701,20 @@ function MonthlyCalendar({
           flexWrap: "wrap",
         }}
       >
-        <LegendDot color="#9d293b" label="Nora" />
-        <LegendDot color="#607b54" label="Basecamp" />
-        <LegendDot color="#b98a2f" label="Inne miejsce" />
+        <LegendDot
+          color="#9d293b"
+          label="Nora"
+        />
+
+        <LegendDot
+          color="#607b54"
+          label="Basecamp"
+        />
+
+        <LegendDot
+          color="#b98a2f"
+          label="Inne miejsce"
+        />
       </div>
     </div>
   );
@@ -1397,18 +2744,27 @@ function AppHeader({ subtitle, logout }) {
               5 WDH • CZERWONE BERETY
             </div>
 
-            <h1 style={{ margin: "7px 0 5px", fontSize: 30 }}>
+            <h1
+              style={{
+                margin: "7px 0 5px",
+                fontSize: 30,
+              }}
+            >
               Centrum Dowodzenia
             </h1>
 
-            <div style={{ opacity: 0.75 }}>{subtitle}</div>
+            <div style={{ opacity: 0.75 }}>
+              {subtitle}
+            </div>
           </div>
 
           <button
             onClick={logout}
             style={{
-              border: "1px solid rgba(255,255,255,.3)",
-              background: "rgba(255,255,255,.08)",
+              border:
+                "1px solid rgba(255,255,255,.3)",
+              background:
+                "rgba(255,255,255,.08)",
               color: "white",
               borderRadius: 11,
               padding: "8px 10px",
@@ -1423,7 +2779,11 @@ function AppHeader({ subtitle, logout }) {
   );
 }
 
-function BottomNav({ tabs, activeTab, setActiveTab }) {
+function BottomNav({
+  tabs,
+  activeTab,
+  setActiveTab,
+}) {
   return (
     <nav
       style={{
@@ -1437,7 +2797,8 @@ function BottomNav({ tabs, activeTab, setActiveTab }) {
         justifyContent: "space-around",
         zIndex: 50,
         padding: "11px 3px 14px",
-        boxShadow: "0 -5px 18px rgba(0,0,0,.04)",
+        boxShadow:
+          "0 -5px 18px rgba(0,0,0,.04)",
       }}
     >
       {tabs.map((tab) => (
@@ -1447,8 +2808,12 @@ function BottomNav({ tabs, activeTab, setActiveTab }) {
           style={{
             border: 0,
             background: "transparent",
-            color: activeTab === tab ? "#8b2635" : "#68736d",
-            fontWeight: activeTab === tab ? 800 : 500,
+            color:
+              activeTab === tab
+                ? "#8b2635"
+                : "#68736d",
+            fontWeight:
+              activeTab === tab ? 800 : 500,
             cursor: "pointer",
             padding: "6px 8px",
           }}
@@ -1475,7 +2840,9 @@ function ModalBackground({ children, close }) {
       }}
     >
       <div
-        onClick={(event) => event.stopPropagation()}
+        onClick={(event) =>
+          event.stopPropagation()
+        }
         style={{
           background: "#f7f6f1",
           width: "100%",
@@ -1497,8 +2864,16 @@ function SimplePage({ title, text }) {
   return (
     <>
       <h2>{title}</h2>
+
       <div style={cardStyle}>
-        <p style={{ color: "#69746d", margin: 0 }}>{text}</p>
+        <p
+          style={{
+            color: "#69746d",
+            margin: 0,
+          }}
+        >
+          {text}
+        </p>
       </div>
     </>
   );
@@ -1519,7 +2894,13 @@ function Dot({ color }) {
 
 function LegendDot({ color, label }) {
   return (
-    <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+    <span
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+      }}
+    >
       <Dot color={color} />
       {label}
     </span>
@@ -1530,12 +2911,14 @@ const appStyle = {
   minHeight: "100vh",
   background: "#f2f0e7",
   color: "#17231c",
-  fontFamily: "Inter, Arial, Helvetica, sans-serif",
+  fontFamily:
+    "Inter, Arial, Helvetica, sans-serif",
   paddingBottom: 90,
 };
 
 const headerStyle = {
-  background: "linear-gradient(135deg, #122d22 0%, #214c38 100%)",
+  background:
+    "linear-gradient(135deg, #122d22 0%, #214c38 100%)",
   color: "white",
   padding: "28px 20px 32px",
   borderRadius: "0 0 30px 30px",
@@ -1566,5 +2949,6 @@ const centerScreen = {
   justifyContent: "center",
   background: "#f2f0e7",
   color: "#173b2b",
-  fontFamily: "Inter, Arial, Helvetica, sans-serif",
+  fontFamily:
+    "Inter, Arial, Helvetica, sans-serif",
 };
