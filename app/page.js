@@ -736,20 +736,29 @@ export default function Home() {
     if (!session?.user) return;
 
     try {
-      const [
-        { data: eventData, error: eventError },
-        { data: membershipData },
-        { data: assignmentData, error: assignmentError },
-        { data: signupData, error: signupError },
-      ] = await Promise.all([
-        supabase
-          .from("events")
-          .select(
-            "id,title,event_type,event_date,start_time,end_time,location,description,created_by,whole_troop,patrol_id,what_to_bring,cost,payment_deadline,responsible_person_id,signup_enabled,signup_deadline"
-          )
-          .order("event_date")
-          .order("start_time"),
+      const { data: eventData, error: eventError } = await supabase
+        .from("events")
+        .select(
+          "id,title,event_type,event_date,start_time,end_time,location,description,created_by,whole_troop,patrol_id,what_to_bring,cost,payment_deadline,responsible_person_id,signup_enabled,signup_deadline"
+        )
+        .order("event_date")
+        .order("start_time");
 
+      if (eventError) {
+        console.error("Błąd głównej tabeli events:", eventError);
+        alert(
+          `Nie udało się pobrać wydarzeń.\n\n${eventError.message || ""}`
+        );
+        return;
+      }
+
+      setEvents(eventData || []);
+
+      const [
+        membershipResult,
+        assignmentResult,
+        signupResult,
+      ] = await Promise.all([
         supabase
           .from("patrol_members")
           .select("patrol_id")
@@ -757,28 +766,60 @@ export default function Home() {
 
         supabase
           .from("event_assignments")
-          .select("id,event_id,user_id,assignment_type,note,assigned_by,created_at"),
+          .select(
+            "id,event_id,user_id,assignment_type,note,assigned_by,created_at"
+          ),
 
         supabase
           .from("event_signups")
-          .select("id,event_id,user_id,status,note,admin_note,reviewed_by,reviewed_at,created_at,updated_at"),
+          .select(
+            "id,event_id,user_id,status,note,admin_note,reviewed_by,reviewed_at,created_at,updated_at"
+          ),
       ]);
 
-      if (eventError) throw eventError;
-      if (assignmentError) throw assignmentError;
-      if (signupError) throw signupError;
+      if (membershipResult.error) {
+        console.warn(
+          "Nie udało się pobrać członkostwa w zastępach:",
+          membershipResult.error
+        );
+        setMyPatrolIds([]);
+      } else {
+        setMyPatrolIds(
+          (membershipResult.data || []).map((item) =>
+            Number(item.patrol_id)
+          )
+        );
+      }
 
-      setEvents(eventData || []);
-      setEventAssignments(assignmentData || []);
-      setEventSignups(signupData || []);
-      setMyPatrolIds(
-        (membershipData || []).map((item) => Number(item.patrol_id))
-      );
+      if (assignmentResult.error) {
+        console.warn(
+          "Nie udało się pobrać składu wyjazdów:",
+          assignmentResult.error
+        );
+        setEventAssignments([]);
+      } else {
+        setEventAssignments(assignmentResult.data || []);
+      }
+
+      if (signupResult.error) {
+        console.warn(
+          "Nie udało się pobrać zgłoszeń na wyjazdy:",
+          signupResult.error
+        );
+        setEventSignups([]);
+      } else {
+        setEventSignups(signupResult.data || []);
+      }
     } catch (error) {
       console.error("Błąd pobierania wydarzeń:", error);
-      alert("Nie udało się pobrać wydarzeń.");
+      alert(
+        `Nie udało się pobrać wydarzeń.\n\n${
+          error?.message || "Nieznany błąd"
+        }`
+      );
     }
   }
+
 
   function openEventForm(presetType = "zbiórka") {
     const tripPreset = isTripType(presetType);
@@ -876,7 +917,12 @@ export default function Home() {
           .eq("slot_date", eventForm.date)
           .eq("location", finalLocation);
 
-        if (existingError) throw existingError;
+        if (existingError) {
+          console.warn(
+            "Nie udało się sprawdzić grafiku sali przed zapisem wydarzenia:",
+            existingError
+          );
+        }
 
         const occupiedTimes = new Set(
           (existingSlots || []).map((slot) => normalizeTime(slot.start_time))
@@ -953,7 +999,15 @@ export default function Home() {
             }))
           );
 
-        if (assignmentError) throw assignmentError;
+        if (assignmentError) {
+          console.warn(
+            "Wydarzenie zapisano, ale nie udało się zapisać wybranego składu:",
+            assignmentError
+          );
+          alert(
+            `Wydarzenie zapisano, ale nie udało się zapisać listy wybranych osób.\n\n${assignmentError.message || ""}`
+          );
+        }
       }
 
       if (reservesRoom && starts.length > 0) {
@@ -971,7 +1025,15 @@ export default function Home() {
           .from("schedule_slots")
           .insert(slotsToInsert);
 
-        if (slotError) throw slotError;
+        if (slotError) {
+          console.warn(
+            "Wydarzenie zapisano, ale nie udało się zarezerwować sali w Grafiku:",
+            slotError
+          );
+          alert(
+            `Wydarzenie zapisano, ale sala nie została dodana do Grafiku.\n\n${slotError.message || ""}`
+          );
+        }
       }
 
       await sendPush({
@@ -1010,15 +1072,21 @@ export default function Home() {
       console.error("Błąd zapisu wydarzenia:", error);
 
       if (createdEventId) {
-        await supabase
-          .from("events")
-          .delete()
-          .eq("id", createdEventId);
-      }
+        alert(
+          `Wydarzenie zostało zapisane, ale nie udało się wykonać jednej z dodatkowych operacji (np. rezerwacji sali albo składu wyjazdu).\n\n${error?.message || ""}`
+        );
 
-      alert(
-        `Nie udało się zapisać wydarzenia.\n\n${error?.message || ""}`
-      );
+        setEventModalOpen(false);
+        await Promise.allSettled([
+          loadEvents(),
+          loadSchedule(),
+          loadNotifications(),
+        ]);
+      } else {
+        alert(
+          `Nie udało się zapisać wydarzenia.\n\n${error?.message || ""}`
+        );
+      }
     } finally {
       setEventSaving(false);
     }
