@@ -1,6 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { createClient } from "@supabase/supabase-js";
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+);
 
 const PATROLS = [
   { name: "H Falco", leader: "Filip" },
@@ -52,6 +58,31 @@ const STARTING_RESERVATIONS = [
     patrol: "HS Damski",
     leader: "Basia",
     location: "Orlik",
+  },
+];
+
+const PARENT_EVENTS = [
+  {
+    id: 1,
+    date: "2026-09-26",
+    title: "Zbiórka H Falco",
+    time: "17:30–19:30",
+    location: "Basecamp",
+    type: "Zbiórka",
+    info: "Orientacja w terenie",
+    bring: "Mundur, latarka, coś do picia",
+  },
+  {
+    id: 2,
+    date: "2026-10-24",
+    title: "INO Dąbrówka",
+    time: "07:15–18:00",
+    location: "Dąbrówka",
+    type: "Wyjazd",
+    info: "Mistrzostwa Chorągwi w biegu na orientację",
+    bring: "Mundur, buty terenowe, prowiant, woda",
+    cost: "35 zł",
+    deadline: "15 października",
   },
 ];
 
@@ -107,7 +138,6 @@ function moveDate(dateString, days) {
 function getCalendarDays(year, month) {
   const firstDay = new Date(year, month, 1);
   const lastDay = new Date(year, month + 1, 0);
-
   const startOffset = (firstDay.getDay() + 6) % 7;
 
   const days = [];
@@ -127,21 +157,65 @@ function getCalendarDays(year, month) {
   return days;
 }
 
+const cardStyle = {
+  background: "white",
+  borderRadius: 18,
+  padding: 17,
+  boxShadow: "0 4px 18px rgba(0,0,0,.055)",
+};
+
+const primaryStyle = {
+  border: 0,
+  background: "#8b2635",
+  color: "white",
+  borderRadius: 13,
+  padding: "11px 15px",
+  fontWeight: 700,
+  cursor: "pointer",
+};
+
+const secondaryStyle = {
+  border: "1px solid #d6dbd6",
+  background: "white",
+  color: "#1c382b",
+  borderRadius: 13,
+  padding: "10px 14px",
+  cursor: "pointer",
+};
+
+const inputStyle = {
+  display: "block",
+  width: "100%",
+  boxSizing: "border-box",
+  marginTop: 7,
+  padding: "13px 12px",
+  borderRadius: 12,
+  border: "1px solid #d2d7d2",
+  background: "white",
+  fontSize: 15,
+  color: "#17231c",
+};
+
 export default function Home() {
+  const [loading, setLoading] = useState(true);
+  const [session, setSession] = useState(null);
+  const [role, setRole] = useState(null);
+
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [loggingIn, setLoggingIn] = useState(false);
+
   const [activeTab, setActiveTab] = useState("Grafik");
 
   const [selectedDate, setSelectedDate] =
     useState("2026-09-26");
 
-  const initialDate = new Date("2026-09-26T12:00:00");
+  const [calendarYear, setCalendarYear] =
+    useState(2026);
 
-  const [calendarYear, setCalendarYear] = useState(
-    initialDate.getFullYear()
-  );
-
-  const [calendarMonth, setCalendarMonth] = useState(
-    initialDate.getMonth()
-  );
+  const [calendarMonth, setCalendarMonth] =
+    useState(8);
 
   const [locationFilter, setLocationFilter] =
     useState("Wszystkie");
@@ -160,20 +234,100 @@ export default function Home() {
     time: "17:30",
   });
 
+  useEffect(() => {
+    checkSession();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(
+      async (_event, newSession) => {
+        setSession(newSession);
+
+        if (newSession?.user) {
+          await loadRole(newSession.user.id);
+        } else {
+          setRole(null);
+          setLoading(false);
+        }
+      }
+    );
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  async function checkSession() {
+    const {
+      data: { session: currentSession },
+    } = await supabase.auth.getSession();
+
+    setSession(currentSession);
+
+    if (currentSession?.user) {
+      await loadRole(currentSession.user.id);
+    } else {
+      setLoading(false);
+    }
+  }
+
+  async function loadRole(userId) {
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("role")
+      .eq("id", userId)
+      .single();
+
+    if (error) {
+      console.error(error);
+      setRole("member");
+    } else {
+      setRole(data?.role || "member");
+    }
+
+    setLoading(false);
+  }
+
+  async function login(event) {
+    event.preventDefault();
+
+    setLoggingIn(true);
+    setLoginError("");
+
+    const { error } =
+      await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+    if (error) {
+      setLoginError(
+        "Nie udało się zalogować. Sprawdź e-mail i hasło."
+      );
+    }
+
+    setLoggingIn(false);
+  }
+
+  async function logout() {
+    await supabase.auth.signOut();
+    setSession(null);
+    setRole(null);
+    setActiveTab("Grafik");
+  }
+
   function openReservation(
     time = "17:30",
     location = "Nora"
   ) {
     setForm({
       patrol: "H Falco",
-      location:
-        MAIN_LOCATIONS.includes(location)
-          ? location
-          : "Inne",
-      customLocation:
-        MAIN_LOCATIONS.includes(location)
-          ? ""
-          : location,
+      location: MAIN_LOCATIONS.includes(location)
+        ? location
+        : "Inne",
+      customLocation: MAIN_LOCATIONS.includes(location)
+        ? ""
+        : location,
       time,
     });
 
@@ -181,18 +335,18 @@ export default function Home() {
   }
 
   function selectCalendarDay(date) {
-    const newDate = dateToString(date);
+    const value = dateToString(date);
 
-    setSelectedDate(newDate);
+    setSelectedDate(value);
     setCalendarYear(date.getFullYear());
     setCalendarMonth(date.getMonth());
   }
 
   function changeDay(days) {
-    const newDate = moveDate(selectedDate, days);
-    const date = new Date(`${newDate}T12:00:00`);
+    const value = moveDate(selectedDate, days);
+    const date = new Date(`${value}T12:00:00`);
 
-    setSelectedDate(newDate);
+    setSelectedDate(value);
     setCalendarYear(date.getFullYear());
     setCalendarMonth(date.getMonth());
   }
@@ -261,12 +415,41 @@ export default function Home() {
     setDetailsOpen(null);
   }
 
+  if (loading) {
+    return (
+      <div style={centerScreen}>
+        <strong>Ładowanie Centrum Dowodzenia...</strong>
+      </div>
+    );
+  }
+
+  if (!session) {
+    return (
+      <LoginScreen
+        email={email}
+        setEmail={setEmail}
+        password={password}
+        setPassword={setPassword}
+        login={login}
+        error={loginError}
+        loggingIn={loggingIn}
+      />
+    );
+  }
+
+  if (role === "parent") {
+    return (
+      <ParentApp
+        session={session}
+        logout={logout}
+      />
+    );
+  }
+
   const dayReservations = reservations
     .filter((item) => item.date === selectedDate)
     .filter((item) => {
-      if (locationFilter === "Wszystkie") {
-        return true;
-      }
+      if (locationFilter === "Wszystkie") return true;
 
       if (locationFilter === "Inne") {
         return !MAIN_LOCATIONS.includes(item.location);
@@ -286,331 +469,28 @@ export default function Home() {
     year: "numeric",
   }).format(new Date(calendarYear, calendarMonth, 1));
 
-  const styles = {
-    app: {
-      minHeight: "100vh",
-      background: "#f2f0e7",
-      color: "#17231c",
-      fontFamily:
-        "Inter, Arial, Helvetica, sans-serif",
-      paddingBottom: "90px",
-    },
-
-    header: {
-      background:
-        "linear-gradient(135deg, #122d22 0%, #214c38 100%)",
-      color: "white",
-      padding: "28px 20px 32px",
-      borderRadius: "0 0 30px 30px",
-    },
-
-    container: {
-      maxWidth: "900px",
-      margin: "0 auto",
-    },
-
-    card: {
-      background: "white",
-      borderRadius: "18px",
-      padding: "17px",
-      boxShadow: "0 4px 18px rgba(0,0,0,.055)",
-    },
-
-    primary: {
-      border: 0,
-      background: "#8b2635",
-      color: "white",
-      borderRadius: "13px",
-      padding: "11px 15px",
-      fontWeight: 700,
-      cursor: "pointer",
-    },
-
-    secondary: {
-      border: "1px solid #d6dbd6",
-      background: "white",
-      color: "#1c382b",
-      borderRadius: "13px",
-      padding: "10px 14px",
-      cursor: "pointer",
-    },
-  };
-
   return (
-    <main style={styles.app}>
-      <header style={styles.header}>
-        <div style={styles.container}>
-          <div
-            style={{
-              fontSize: 12,
-              letterSpacing: 2.2,
-              opacity: 0.72,
-              fontWeight: 700,
-            }}
-          >
-            5 WDH • CZERWONE BERETY
-          </div>
+    <main style={appStyle}>
+      <AppHeader
+        subtitle={
+          role === "admin"
+            ? "Panel administratora"
+            : "Centrum drużyny"
+        }
+        logout={logout}
+      />
 
-          <h1
-            style={{
-              margin: "7px 0 5px",
-              fontSize: 30,
-            }}
-          >
-            Centrum Dowodzenia
-          </h1>
-
-          <div style={{ opacity: 0.75 }}>
-            Drużyna w jednym miejscu.
-          </div>
-        </div>
-      </header>
-
-      <section
-        style={{
-          ...styles.container,
-          padding: "22px 15px",
-        }}
-      >
+      <section style={containerPadding}>
         {activeTab === "Grafik" && (
           <>
-            {/* KALENDARZ MIESIĘCZNY */}
-
-            <div
-              style={{
-                ...styles.card,
-                marginBottom: 22,
-                padding: 18,
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  gap: 10,
-                  marginBottom: 18,
-                }}
-              >
-                <button
-                  style={styles.secondary}
-                  onClick={() => changeMonth(-1)}
-                >
-                  ←
-                </button>
-
-                <div
-                  style={{
-                    textAlign: "center",
-                    fontWeight: 900,
-                    fontSize: 18,
-                    textTransform: "capitalize",
-                  }}
-                >
-                  {monthName}
-                </div>
-
-                <button
-                  style={styles.secondary}
-                  onClick={() => changeMonth(1)}
-                >
-                  →
-                </button>
-              </div>
-
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(7, 1fr)",
-                  textAlign: "center",
-                  marginBottom: 7,
-                }}
-              >
-                {[
-                  "Pon",
-                  "Wt",
-                  "Śr",
-                  "Czw",
-                  "Pt",
-                  "Sob",
-                  "Nd",
-                ].map((day) => (
-                  <div
-                    key={day}
-                    style={{
-                      fontSize: 11,
-                      fontWeight: 800,
-                      color: "#78827c",
-                      padding: "5px 0",
-                    }}
-                  >
-                    {day}
-                  </div>
-                ))}
-              </div>
-
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(7, 1fr)",
-                  gap: 5,
-                }}
-              >
-                {calendarDays.map((date, index) => {
-                  if (!date) {
-                    return (
-                      <div
-                        key={`empty-${index}`}
-                        style={{ minHeight: 55 }}
-                      />
-                    );
-                  }
-
-                  const dateString = dateToString(date);
-
-                  const isSelected =
-                    dateString === selectedDate;
-
-                  const reservationsThisDay =
-                    reservations.filter(
-                      (item) =>
-                        item.date === dateString
-                    );
-
-                  const hasNora =
-                    reservationsThisDay.some(
-                      (item) =>
-                        item.location === "Nora"
-                    );
-
-                  const hasBasecamp =
-                    reservationsThisDay.some(
-                      (item) =>
-                        item.location === "Basecamp"
-                    );
-
-                  const hasOther =
-                    reservationsThisDay.some(
-                      (item) =>
-                        !MAIN_LOCATIONS.includes(
-                          item.location
-                        )
-                    );
-
-                  return (
-                    <button
-                      key={dateString}
-                      onClick={() =>
-                        selectCalendarDay(date)
-                      }
-                      style={{
-                        border: 0,
-                        background: isSelected
-                          ? "#173b2b"
-                          : "transparent",
-                        color: isSelected
-                          ? "white"
-                          : "#17231c",
-                        borderRadius: 14,
-                        minHeight: 55,
-                        cursor: "pointer",
-                        display: "flex",
-                        flexDirection: "column",
-                        justifyContent: "center",
-                        alignItems: "center",
-                        gap: 5,
-                        fontWeight: isSelected
-                          ? 900
-                          : 600,
-                      }}
-                    >
-                      <span>{date.getDate()}</span>
-
-                      <div
-                        style={{
-                          height: 7,
-                          display: "flex",
-                          gap: 3,
-                          justifyContent: "center",
-                        }}
-                      >
-                        {hasNora && (
-                          <span
-                            title="Nora"
-                            style={{
-                              width: 6,
-                              height: 6,
-                              borderRadius: "50%",
-                              background: isSelected
-                                ? "#f1a5ae"
-                                : "#9d293b",
-                            }}
-                          />
-                        )}
-
-                        {hasBasecamp && (
-                          <span
-                            title="Basecamp"
-                            style={{
-                              width: 6,
-                              height: 6,
-                              borderRadius: "50%",
-                              background: isSelected
-                                ? "#bcd3b2"
-                                : "#607b54",
-                            }}
-                          />
-                        )}
-
-                        {hasOther && (
-                          <span
-                            title="Inne miejsce"
-                            style={{
-                              width: 6,
-                              height: 6,
-                              borderRadius: "50%",
-                              background: isSelected
-                                ? "#f3d899"
-                                : "#b98a2f",
-                            }}
-                          />
-                        )}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div
-                style={{
-                  borderTop: "1px solid #edf0ed",
-                  marginTop: 15,
-                  paddingTop: 12,
-                  display: "flex",
-                  gap: 17,
-                  flexWrap: "wrap",
-                  fontSize: 11,
-                  color: "#68736d",
-                }}
-              >
-                <LegendDot
-                  color="#9d293b"
-                  label="Nora"
-                />
-
-                <LegendDot
-                  color="#607b54"
-                  label="Basecamp"
-                />
-
-                <LegendDot
-                  color="#b98a2f"
-                  label="Inne miejsce"
-                />
-              </div>
-            </div>
-
-            {/* WIDOK KONKRETNEGO DNIA */}
+            <MonthlyCalendar
+              calendarDays={calendarDays}
+              monthName={monthName}
+              selectedDate={selectedDate}
+              reservations={reservations}
+              changeMonth={changeMonth}
+              selectCalendarDay={selectCalendarDay}
+            />
 
             <div
               style={{
@@ -623,15 +503,7 @@ export default function Home() {
               }}
             >
               <div>
-                <div
-                  style={{
-                    textTransform: "uppercase",
-                    fontSize: 12,
-                    fontWeight: 800,
-                    color: "#68746d",
-                    letterSpacing: 1,
-                  }}
-                >
+                <div style={eyebrowStyle}>
                   Grafik harcówki
                 </div>
 
@@ -647,18 +519,16 @@ export default function Home() {
               </div>
 
               <button
-                style={styles.primary}
+                style={primaryStyle}
                 onClick={() => openReservation()}
               >
                 + Rezerwacja
               </button>
             </div>
 
-            {/* DZIEŃ WSTECZ / DALEJ */}
-
             <div
               style={{
-                ...styles.card,
+                ...cardStyle,
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "space-between",
@@ -667,7 +537,7 @@ export default function Home() {
               }}
             >
               <button
-                style={styles.secondary}
+                style={secondaryStyle}
                 onClick={() => changeDay(-1)}
               >
                 ←
@@ -686,12 +556,8 @@ export default function Home() {
                   );
 
                   setSelectedDate(value);
-                  setCalendarYear(
-                    date.getFullYear()
-                  );
-                  setCalendarMonth(
-                    date.getMonth()
-                  );
+                  setCalendarYear(date.getFullYear());
+                  setCalendarMonth(date.getMonth());
                 }}
                 style={{
                   border: 0,
@@ -703,14 +569,12 @@ export default function Home() {
               />
 
               <button
-                style={styles.secondary}
+                style={secondaryStyle}
                 onClick={() => changeDay(1)}
               >
                 →
               </button>
             </div>
-
-            {/* FILTRY */}
 
             <div
               style={{
@@ -760,12 +624,10 @@ export default function Home() {
               ))}
             </div>
 
-            {/* ZAJĘTE TERMINY */}
-
             {dayReservations.length === 0 && (
               <div
                 style={{
-                  ...styles.card,
+                  ...cardStyle,
                   textAlign: "center",
                   color: "#68736d",
                   marginBottom: 12,
@@ -775,103 +637,77 @@ export default function Home() {
               </div>
             )}
 
-            <div
-              style={{
-                display: "grid",
-                gap: 10,
-              }}
-            >
-              {dayReservations.map(
-                (reservation) => (
-                  <button
-                    key={reservation.id}
-                    onClick={() =>
-                      setDetailsOpen(
-                        reservation
-                      )
-                    }
-                    style={{
-                      ...styles.card,
-                      width: "100%",
-                      border: 0,
-                      borderLeft:
-                        "5px solid #8b2635",
-                      textAlign: "left",
-                      display: "grid",
-                      gridTemplateColumns:
-                        "minmax(90px,110px) 1fr auto",
-                      alignItems: "center",
-                      gap: 12,
-                      cursor: "pointer",
-                      color: "#17231c",
-                    }}
-                  >
-                    <strong>
-                      {reservation.time}–
-                      {addMinutes(
-                        reservation.time,
-                        30
-                      )}
-                    </strong>
+            <div style={{ display: "grid", gap: 10 }}>
+              {dayReservations.map((reservation) => (
+                <button
+                  key={reservation.id}
+                  onClick={() =>
+                    setDetailsOpen(reservation)
+                  }
+                  style={{
+                    ...cardStyle,
+                    width: "100%",
+                    border: 0,
+                    borderLeft: "5px solid #8b2635",
+                    textAlign: "left",
+                    display: "grid",
+                    gridTemplateColumns:
+                      "minmax(90px,110px) 1fr auto",
+                    alignItems: "center",
+                    gap: 12,
+                    cursor: "pointer",
+                    color: "#17231c",
+                  }}
+                >
+                  <strong>
+                    {reservation.time}–
+                    {addMinutes(reservation.time, 30)}
+                  </strong>
 
-                    <div>
-                      <div
-                        style={{
-                          fontSize: 17,
-                          fontWeight: 800,
-                        }}
-                      >
-                        {reservation.patrol}
-                      </div>
-
-                      <div
-                        style={{
-                          color: "#6a746e",
-                          fontSize: 13,
-                          marginTop: 3,
-                        }}
-                      >
-                        {reservation.leader} •
-                        zastępowy / lider
-                      </div>
-                    </div>
-
-                    <span
+                  <div>
+                    <div
                       style={{
-                        background: "#edf1ed",
-                        padding: "8px 10px",
-                        borderRadius: 11,
-                        fontSize: 12,
+                        fontSize: 17,
                         fontWeight: 800,
                       }}
                     >
-                      {reservation.location}
-                    </span>
-                  </button>
-                )
-              )}
+                      {reservation.patrol}
+                    </div>
+
+                    <div
+                      style={{
+                        color: "#6a746e",
+                        fontSize: 13,
+                        marginTop: 3,
+                      }}
+                    >
+                      {reservation.leader} • zastępowy /
+                      lider
+                    </div>
+                  </div>
+
+                  <span
+                    style={{
+                      background: "#edf1ed",
+                      padding: "8px 10px",
+                      borderRadius: 11,
+                      fontSize: 12,
+                      fontWeight: 800,
+                    }}
+                  >
+                    {reservation.location}
+                  </span>
+                </button>
+              ))}
             </div>
 
-            {/* WOLNE TERMINY */}
-
-            <h3
-              style={{
-                margin: "26px 0 10px",
-              }}
-            >
+            <h3 style={{ margin: "26px 0 10px" }}>
               Wolne terminy
             </h3>
 
-            <div
-              style={{
-                display: "grid",
-                gap: 8,
-              }}
-            >
+            <div style={{ display: "grid", gap: 8 }}>
               {TIMES.filter((time) => {
-                const hour = Number(
-                  time.slice(0, 2)
-                );
+                const hour = Number(time.slice(0, 2));
 
                 const date = new Date(
                   `${selectedDate}T12:00:00`
@@ -898,102 +734,73 @@ export default function Home() {
                 return true;
               })
                 .slice(0, 20)
-                .map((time) => {
-                  let locationsToShow = [];
-
-                  if (
-                    locationFilter ===
-                    "Wszystkie"
-                  ) {
-                    locationsToShow = [
-                      "Nora",
-                      "Basecamp",
-                    ];
-                  } else if (
-                    locationFilter === "Inne"
-                  ) {
-                    return null;
-                  } else {
-                    locationsToShow = [
-                      locationFilter,
-                    ];
+                .flatMap((time) => {
+                  if (locationFilter === "Inne") {
+                    return [];
                   }
 
-                  return locationsToShow.map(
-                    (location) => {
-                      const occupied =
-                        reservations.some(
-                          (item) =>
-                            item.date ===
-                              selectedDate &&
-                            item.time ===
-                              time &&
-                            item.location ===
-                              location
-                        );
+                  const locations =
+                    locationFilter === "Wszystkie"
+                      ? MAIN_LOCATIONS
+                      : [locationFilter];
 
-                      if (occupied) {
-                        return null;
-                      }
+                  return locations.map((location) => {
+                    const occupied = reservations.some(
+                      (item) =>
+                        item.date === selectedDate &&
+                        item.time === time &&
+                        item.location === location
+                    );
 
-                      return (
-                        <div
-                          key={`${time}-${location}`}
-                          style={{
-                            border:
-                              "2px dashed #ccd2cd",
-                            borderRadius: 16,
-                            padding: 14,
-                            display: "flex",
-                            alignItems:
-                              "center",
-                            justifyContent:
-                              "space-between",
-                            gap: 10,
-                          }}
-                        >
-                          <div>
-                            <strong>
-                              {time}–
-                              {addMinutes(
-                                time,
-                                30
-                              )}
-                            </strong>
+                    if (occupied) return null;
 
-                            <div
-                              style={{
-                                fontSize: 13,
-                                color:
-                                  "#6c756f",
-                                marginTop: 3,
-                              }}
-                            >
-                              {location} •
-                              wolne
-                            </div>
-                          </div>
+                    return (
+                      <div
+                        key={`${time}-${location}`}
+                        style={{
+                          border:
+                            "2px dashed #ccd2cd",
+                          borderRadius: 16,
+                          padding: 14,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent:
+                            "space-between",
+                          gap: 10,
+                        }}
+                      >
+                        <div>
+                          <strong>
+                            {time}–
+                            {addMinutes(time, 30)}
+                          </strong>
 
-                          <button
-                            style={
-                              styles.secondary
-                            }
-                            onClick={() =>
-                              openReservation(
-                                time,
-                                location
-                              )
-                            }
+                          <div
+                            style={{
+                              fontSize: 13,
+                              color: "#6c756f",
+                              marginTop: 3,
+                            }}
                           >
-                            Zarezerwuj
-                          </button>
+                            {location} • wolne
+                          </div>
                         </div>
-                      );
-                    }
-                  );
-                })}
 
-              {/* DOWOLNE MIEJSCE */}
+                        <button
+                          style={secondaryStyle}
+                          onClick={() =>
+                            openReservation(
+                              time,
+                              location
+                            )
+                          }
+                        >
+                          Zarezerwuj
+                        </button>
+                      </div>
+                    );
+                  });
+                })}
 
               <button
                 onClick={() =>
@@ -1003,15 +810,13 @@ export default function Home() {
                   )
                 }
                 style={{
-                  border:
-                    "2px dashed #b98a2f",
+                  border: "2px dashed #b98a2f",
                   borderRadius: 16,
                   padding: 15,
                   background: "#fffdf7",
                   color: "#72571e",
                   cursor: "pointer",
                   fontWeight: 800,
-                  textAlign: "center",
                 }}
               >
                 + Zarezerwuj inne miejsce
@@ -1020,86 +825,32 @@ export default function Home() {
           </>
         )}
 
-        {/* MOJE */}
-
         {activeTab === "Moje" && (
-          <>
-            <h2>Moje</h2>
-
-            <p style={{ color: "#66736c" }}>
-              Twoje najbliższe rezerwacje i
-              sprawy.
-            </p>
-
-            <div style={styles.card}>
-              <strong>
-                Najbliższe działania
-              </strong>
-
-              <p style={{ color: "#69746d" }}>
-                Tutaj podepniemy rezerwacje
-                użytkownika, zadania i wyjazdy.
-              </p>
-            </div>
-          </>
+          <SimplePage
+            title="Moje"
+            text="Twoje najbliższe zbiórki, wyjazdy, rezerwacje i zadania będą tutaj."
+          />
         )}
-
-        {/* WYJAZDY */}
 
         {activeTab === "Wyjazdy" && (
-          <>
-            <h2>Wyjazdy</h2>
-
-            <p style={{ color: "#66736c" }}>
-              Biwaki, rajdy, zawody i wyprawy.
-            </p>
-
-            <div style={styles.card}>
-              <strong>+ Nowy wyjazd</strong>
-
-              <p style={{ color: "#69746d" }}>
-                Tu pojawią się terminy,
-                uczestnicy, transport, koszty,
-                wpłaty i zgody.
-              </p>
-            </div>
-          </>
+          <SimplePage
+            title="Wyjazdy"
+            text="Biwaki, rajdy, zawody i wyprawy."
+          />
         )}
-
-        {/* ZADANIA */}
 
         {activeTab === "Zadania" && (
-          <>
-            <h2>Zadania</h2>
-
-            <p style={{ color: "#66736c" }}>
-              Kto, co i do kiedy.
-            </p>
-
-            <div style={styles.card}>
-              <strong>
-                Brak aktywnych zadań
-              </strong>
-
-              <p style={{ color: "#69746d" }}>
-                Tutaj podepniemy zadania kadry.
-              </p>
-            </div>
-          </>
+          <SimplePage
+            title="Zadania"
+            text="Zadania drużyny: kto, co i do kiedy."
+          />
         )}
-
-        {/* WIĘCEJ */}
 
         {activeTab === "Więcej" && (
           <>
             <h2>Więcej</h2>
 
-            <div
-              style={{
-                display: "grid",
-                gap: 10,
-              }}
-            >
+            <div style={{ display: "grid", gap: 10 }}>
               {[
                 "Ogłoszenia",
                 "Kadra",
@@ -1109,7 +860,7 @@ export default function Home() {
                 <button
                   key={item}
                   style={{
-                    ...styles.card,
+                    ...cardStyle,
                     border: 0,
                     textAlign: "left",
                     fontWeight: 800,
@@ -1119,7 +870,7 @@ export default function Home() {
                   }}
                   onClick={() =>
                     alert(
-                      `${item} — ten moduł podepniemy później.`
+                      `${item} — moduł podepniemy później.`
                     )
                   }
                 >
@@ -1131,354 +882,1083 @@ export default function Home() {
         )}
       </section>
 
-      {/* DOLNE MENU */}
-
-      <nav
-        style={{
-          position: "fixed",
-          bottom: 0,
-          left: 0,
-          right: 0,
-          background:
-            "rgba(255,255,255,.97)",
-          borderTop:
-            "1px solid #dde1dd",
-          display: "flex",
-          justifyContent: "space-around",
-          zIndex: 50,
-          padding: "11px 3px 14px",
-          boxShadow:
-            "0 -5px 18px rgba(0,0,0,.04)",
-        }}
-      >
-        {[
+      <BottomNav
+        tabs={[
           "Grafik",
           "Moje",
           "Wyjazdy",
           "Zadania",
           "Więcej",
-        ].map((tab) => (
-          <button
-            key={tab}
-            onClick={() =>
-              setActiveTab(tab)
-            }
-            style={{
-              border: 0,
-              background: "transparent",
-              color:
-                activeTab === tab
-                  ? "#8b2635"
-                  : "#68736d",
-              fontWeight:
-                activeTab === tab
-                  ? 800
-                  : 500,
-              cursor: "pointer",
-              padding: "6px 8px",
-            }}
-          >
-            {tab}
-          </button>
-        ))}
-      </nav>
-
-      {/* NOWA REZERWACJA */}
+        ]}
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+      />
 
       {modalOpen && (
-        <div
-          onClick={() =>
-            setModalOpen(false)
-          }
-          style={{
-            position: "fixed",
-            inset: 0,
-            background:
-              "rgba(10,20,15,.58)",
-            zIndex: 100,
-            display: "flex",
-            alignItems: "flex-end",
-            justifyContent: "center",
-          }}
+        <ModalBackground
+          close={() => setModalOpen(false)}
         >
-          <div
-            onClick={(event) =>
-              event.stopPropagation()
-            }
+          <h2 style={{ marginTop: 0 }}>
+            Nowa rezerwacja
+          </h2>
+
+          <p
             style={{
-              background: "#f7f6f1",
-              width: "100%",
-              maxWidth: 600,
-              borderRadius:
-                "26px 26px 0 0",
-              padding:
-                "23px 18px 28px",
+              color: "#69746d",
+              marginTop: -8,
             }}
           >
-            <h2 style={{ marginTop: 0 }}>
-              Nowa rezerwacja
-            </h2>
+            {formatDate(selectedDate)}
+          </p>
 
-            <p
-              style={{
-                color: "#69746d",
-                marginTop: -8,
-              }}
-            >
-              {formatDate(selectedDate)}
-            </p>
+          <div style={{ display: "grid", gap: 15 }}>
+            <label>
+              <strong>Zastęp</strong>
 
-            <div
-              style={{
-                display: "grid",
-                gap: 15,
-              }}
-            >
-              {/* ZASTĘP */}
-
-              <label>
-                <strong>Zastęp</strong>
-
-                <select
-                  value={form.patrol}
-                  onChange={(event) =>
-                    setForm({
-                      ...form,
-                      patrol:
-                        event.target.value,
-                    })
-                  }
-                  style={inputStyle}
-                >
-                  {PATROLS.map(
-                    (patrol) => (
-                      <option
-                        key={patrol.name}
-                      >
-                        {patrol.name}
-                      </option>
-                    )
-                  )}
-                </select>
-              </label>
-
-              {/* MIEJSCE */}
-
-              <label>
-                <strong>Miejsce</strong>
-
-                <select
-                  value={form.location}
-                  onChange={(event) =>
-                    setForm({
-                      ...form,
-                      location:
-                        event.target.value,
-                      customLocation:
-                        event.target.value ===
-                        "Inne"
-                          ? form.customLocation
-                          : "",
-                    })
-                  }
-                  style={inputStyle}
-                >
-                  <option value="Nora">
-                    Nora
-                  </option>
-
-                  <option value="Basecamp">
-                    Basecamp
-                  </option>
-
-                  <option value="Inne">
-                    Inne miejsce...
-                  </option>
-                </select>
-              </label>
-
-              {/* WŁASNE MIEJSCE */}
-
-              {form.location === "Inne" && (
-                <label>
-                  <strong>
-                    Wpisz miejsce
-                  </strong>
-
-                  <input
-                    type="text"
-                    value={
-                      form.customLocation
-                    }
-                    onChange={(event) =>
-                      setForm({
-                        ...form,
-                        customLocation:
-                          event.target
-                            .value,
-                      })
-                    }
-                    placeholder="np. Orlik, Olszynki, szkoła..."
-                    style={inputStyle}
-                  />
-                </label>
-              )}
-
-              {/* GODZINA */}
-
-              <label>
-                <strong>Godzina</strong>
-
-                <select
-                  value={form.time}
-                  onChange={(event) =>
-                    setForm({
-                      ...form,
-                      time:
-                        event.target.value,
-                    })
-                  }
-                  style={inputStyle}
-                >
-                  {TIMES.map((time) => (
-                    <option key={time}>
-                      {time}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns:
-                    "1fr 1fr",
-                  gap: 9,
-                  marginTop: 5,
-                }}
+              <select
+                value={form.patrol}
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+                    patrol: event.target.value,
+                  })
+                }
+                style={inputStyle}
               >
-                <button
-                  style={styles.secondary}
-                  onClick={() =>
-                    setModalOpen(false)
+                {PATROLS.map((patrol) => (
+                  <option key={patrol.name}>
+                    {patrol.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              <strong>Miejsce</strong>
+
+              <select
+                value={form.location}
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+                    location: event.target.value,
+                    customLocation:
+                      event.target.value === "Inne"
+                        ? form.customLocation
+                        : "",
+                  })
+                }
+                style={inputStyle}
+              >
+                <option value="Nora">Nora</option>
+                <option value="Basecamp">
+                  Basecamp
+                </option>
+                <option value="Inne">
+                  Inne miejsce...
+                </option>
+              </select>
+            </label>
+
+            {form.location === "Inne" && (
+              <label>
+                <strong>Wpisz miejsce</strong>
+
+                <input
+                  type="text"
+                  value={form.customLocation}
+                  onChange={(event) =>
+                    setForm({
+                      ...form,
+                      customLocation:
+                        event.target.value,
+                    })
                   }
-                >
-                  Anuluj
-                </button>
+                  placeholder="np. Orlik, Olszynki, szkoła..."
+                  style={inputStyle}
+                />
+              </label>
+            )}
 
-                <button
-                  style={styles.primary}
-                  onClick={
-                    saveReservation
-                  }
-                >
-                  Zapisz rezerwację
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+            <label>
+              <strong>Godzina</strong>
 
-      {/* SZCZEGÓŁY */}
-
-      {detailsOpen && (
-        <div
-          onClick={() =>
-            setDetailsOpen(null)
-          }
-          style={{
-            position: "fixed",
-            inset: 0,
-            background:
-              "rgba(10,20,15,.58)",
-            zIndex: 100,
-            display: "flex",
-            alignItems: "flex-end",
-            justifyContent: "center",
-          }}
-        >
-          <div
-            onClick={(event) =>
-              event.stopPropagation()
-            }
-            style={{
-              background: "#f7f6f1",
-              width: "100%",
-              maxWidth: 600,
-              borderRadius:
-                "26px 26px 0 0",
-              padding:
-                "23px 18px 28px",
-            }}
-          >
-            <div
-              style={{
-                fontSize: 12,
-                color: "#6c756f",
-                textTransform:
-                  "uppercase",
-                fontWeight: 800,
-              }}
-            >
-              Rezerwacja
-            </div>
-
-            <h2>
-              {detailsOpen.patrol}
-            </h2>
-
-            <p>
-              <strong>
-                {detailsOpen.time}–
-                {addMinutes(
-                  detailsOpen.time,
-                  30
-                )}
-              </strong>
-
-              <br />
-
-              📍 {detailsOpen.location}
-
-              <br />
-
-              {detailsOpen.leader} •
-              zastępowy / lider
-            </p>
+              <select
+                value={form.time}
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+                    time: event.target.value,
+                  })
+                }
+                style={inputStyle}
+              >
+                {TIMES.map((time) => (
+                  <option key={time}>{time}</option>
+                ))}
+              </select>
+            </label>
 
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns:
-                  "1fr 1fr",
+                gridTemplateColumns: "1fr 1fr",
                 gap: 9,
               }}
             >
               <button
-                style={styles.secondary}
-                onClick={() =>
-                  setDetailsOpen(null)
-                }
+                style={secondaryStyle}
+                onClick={() => setModalOpen(false)}
               >
-                Zamknij
+                Anuluj
               </button>
 
               <button
-                style={styles.primary}
-                onClick={() =>
-                  removeReservation(
-                    detailsOpen.id
-                  )
-                }
+                style={primaryStyle}
+                onClick={saveReservation}
               >
-                Anuluj rezerwację
+                Zapisz rezerwację
               </button>
             </div>
           </div>
-        </div>
+        </ModalBackground>
+      )}
+
+      {detailsOpen && (
+        <ModalBackground
+          close={() => setDetailsOpen(null)}
+        >
+          <div style={eyebrowStyle}>
+            Rezerwacja
+          </div>
+
+          <h2>{detailsOpen.patrol}</h2>
+
+          <p>
+            <strong>
+              {detailsOpen.time}–
+              {addMinutes(detailsOpen.time, 30)}
+            </strong>
+            <br />
+            📍 {detailsOpen.location}
+            <br />
+            {detailsOpen.leader} • zastępowy / lider
+          </p>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: 9,
+            }}
+          >
+            <button
+              style={secondaryStyle}
+              onClick={() => setDetailsOpen(null)}
+            >
+              Zamknij
+            </button>
+
+            <button
+              style={primaryStyle}
+              onClick={() =>
+                removeReservation(detailsOpen.id)
+              }
+            >
+              Anuluj rezerwację
+            </button>
+          </div>
+        </ModalBackground>
       )}
     </main>
+  );
+}
+
+function LoginScreen({
+  email,
+  setEmail,
+  password,
+  setPassword,
+  login,
+  error,
+  loggingIn,
+}) {
+  return (
+    <main
+      style={{
+        minHeight: "100vh",
+        background:
+          "linear-gradient(160deg, #102a20, #214c38)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 20,
+        fontFamily:
+          "Inter, Arial, Helvetica, sans-serif",
+      }}
+    >
+      <div
+        style={{
+          width: "100%",
+          maxWidth: 420,
+          background: "#f5f3eb",
+          borderRadius: 26,
+          padding: "32px 25px",
+          boxShadow:
+            "0 20px 60px rgba(0,0,0,.25)",
+        }}
+      >
+        <div
+          style={{
+            color: "#8b2635",
+            fontWeight: 900,
+            letterSpacing: 2,
+            fontSize: 12,
+          }}
+        >
+          5 WDH • CZERWONE BERETY
+        </div>
+
+        <h1
+          style={{
+            color: "#17231c",
+            marginBottom: 5,
+          }}
+        >
+          Centrum Dowodzenia
+        </h1>
+
+        <p
+          style={{
+            color: "#68736d",
+            marginTop: 0,
+            marginBottom: 25,
+          }}
+        >
+          Zaloguj się do swojej części drużyny.
+        </p>
+
+        <form
+          onSubmit={login}
+          style={{ display: "grid", gap: 15 }}
+        >
+          <label>
+            <strong>E-mail</strong>
+
+            <input
+              type="email"
+              required
+              value={email}
+              onChange={(event) =>
+                setEmail(event.target.value)
+              }
+              style={inputStyle}
+            />
+          </label>
+
+          <label>
+            <strong>Hasło</strong>
+
+            <input
+              type="password"
+              required
+              value={password}
+              onChange={(event) =>
+                setPassword(event.target.value)
+              }
+              style={inputStyle}
+            />
+          </label>
+
+          {error && (
+            <div
+              style={{
+                background: "#f8e5e7",
+                color: "#812638",
+                borderRadius: 12,
+                padding: 12,
+                fontSize: 14,
+              }}
+            >
+              {error}
+            </div>
+          )}
+
+          <button
+            type="submit"
+            disabled={loggingIn}
+            style={{
+              ...primaryStyle,
+              padding: 14,
+              fontSize: 15,
+              opacity: loggingIn ? 0.6 : 1,
+            }}
+          >
+            {loggingIn
+              ? "Logowanie..."
+              : "Zaloguj się"}
+          </button>
+        </form>
+      </div>
+    </main>
+  );
+}
+
+function ParentApp({ session, logout }) {
+  const [tab, setTab] = useState("Moje");
+
+  const upcoming = [...PARENT_EVENTS].sort((a, b) =>
+    a.date.localeCompare(b.date)
+  );
+
+  return (
+    <main style={appStyle}>
+      <AppHeader
+        subtitle="Strefa rodzica"
+        logout={logout}
+      />
+
+      <section style={containerPadding}>
+        {tab === "Moje" && (
+          <>
+            <div style={eyebrowStyle}>
+              Najważniejsze informacje
+            </div>
+
+            <h2
+              style={{
+                marginTop: 5,
+                marginBottom: 18,
+              }}
+            >
+              Co, kiedy i gdzie?
+            </h2>
+
+            <div style={{ display: "grid", gap: 12 }}>
+              {upcoming.map((event, index) => (
+                <div
+                  key={event.id}
+                  style={{
+                    ...cardStyle,
+                    borderLeft:
+                      index === 0
+                        ? "5px solid #8b2635"
+                        : "5px solid #607b54",
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: 11,
+                      textTransform: "uppercase",
+                      letterSpacing: 1,
+                      color: "#8b2635",
+                      fontWeight: 900,
+                    }}
+                  >
+                    {index === 0
+                      ? "Najbliższe"
+                      : event.type}
+                  </div>
+
+                  <h3
+                    style={{
+                      margin: "7px 0 10px",
+                      fontSize: 20,
+                    }}
+                  >
+                    {event.title}
+                  </h3>
+
+                  <div
+                    style={{
+                      display: "grid",
+                      gap: 6,
+                      fontSize: 14,
+                    }}
+                  >
+                    <div>
+                      📅 {formatDate(event.date)}
+                    </div>
+
+                    <div>🕐 {event.time}</div>
+
+                    <div>📍 {event.location}</div>
+
+                    <div>🧭 {event.info}</div>
+
+                    {event.bring && (
+                      <div>
+                        🎒 <strong>Zabierz:</strong>{" "}
+                        {event.bring}
+                      </div>
+                    )}
+
+                    {event.cost && (
+                      <div>
+                        💰 <strong>Koszt:</strong>{" "}
+                        {event.cost}
+                      </div>
+                    )}
+
+                    {event.deadline && (
+                      <div>
+                        📄{" "}
+                        <strong>
+                          Termin wpłaty/zgody:
+                        </strong>{" "}
+                        {event.deadline}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div
+              style={{
+                ...cardStyle,
+                marginTop: 18,
+                background: "#fffaf0",
+              }}
+            >
+              <strong>Ważne</strong>
+
+              <p
+                style={{
+                  marginBottom: 0,
+                  color: "#657069",
+                }}
+              >
+                Tutaj będą pojawiać się zmiany
+                godzin, miejsc, terminy zgód i inne
+                ważne informacje dla rodziców.
+              </p>
+            </div>
+          </>
+        )}
+
+        {tab === "Kalendarz" && (
+          <ParentCalendar />
+        )}
+
+        {tab === "Dokumenty" && (
+          <>
+            <div style={eyebrowStyle}>
+              Strefa rodzica
+            </div>
+
+            <h2 style={{ marginTop: 5 }}>
+              Dokumenty
+            </h2>
+
+            <div style={{ display: "grid", gap: 10 }}>
+              {[
+                "Zgody na wyjazdy",
+                "Regulaminy",
+                "Karty uczestnika",
+                "Informacje organizacyjne",
+              ].map((document) => (
+                <button
+                  key={document}
+                  style={{
+                    ...cardStyle,
+                    border: 0,
+                    textAlign: "left",
+                    fontWeight: 800,
+                    fontSize: 15,
+                    cursor: "pointer",
+                    color: "#17231c",
+                  }}
+                  onClick={() =>
+                    alert(
+                      `${document} — tutaj podepniemy właściwe pliki.`
+                    )
+                  }
+                >
+                  📄 {document} →
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+      </section>
+
+      <BottomNav
+        tabs={["Moje", "Kalendarz", "Dokumenty"]}
+        activeTab={tab}
+        setActiveTab={setTab}
+      />
+    </main>
+  );
+}
+
+function ParentCalendar() {
+  const [year, setYear] = useState(2026);
+  const [month, setMonth] = useState(8);
+  const [selected, setSelected] =
+    useState("2026-09-26");
+
+  const days = getCalendarDays(year, month);
+
+  const monthName = new Intl.DateTimeFormat("pl-PL", {
+    month: "long",
+    year: "numeric",
+  }).format(new Date(year, month, 1));
+
+  function changeMonth(amount) {
+    const date = new Date(year, month + amount, 1);
+
+    setYear(date.getFullYear());
+    setMonth(date.getMonth());
+  }
+
+  const events = PARENT_EVENTS.filter(
+    (event) => event.date === selected
+  );
+
+  return (
+    <>
+      <div style={eyebrowStyle}>
+        Kalendarz
+      </div>
+
+      <h2 style={{ marginTop: 5 }}>
+        Terminy
+      </h2>
+
+      <div style={cardStyle}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: 15,
+          }}
+        >
+          <button
+            style={secondaryStyle}
+            onClick={() => changeMonth(-1)}
+          >
+            ←
+          </button>
+
+          <strong
+            style={{ textTransform: "capitalize" }}
+          >
+            {monthName}
+          </strong>
+
+          <button
+            style={secondaryStyle}
+            onClick={() => changeMonth(1)}
+          >
+            →
+          </button>
+        </div>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(7,1fr)",
+            textAlign: "center",
+          }}
+        >
+          {[
+            "Pn",
+            "Wt",
+            "Śr",
+            "Cz",
+            "Pt",
+            "So",
+            "Nd",
+          ].map((day) => (
+            <div
+              key={day}
+              style={{
+                fontSize: 11,
+                fontWeight: 800,
+                color: "#78827c",
+                padding: 5,
+              }}
+            >
+              {day}
+            </div>
+          ))}
+
+          {days.map((date, index) => {
+            if (!date) {
+              return (
+                <div
+                  key={`blank-${index}`}
+                  style={{ minHeight: 55 }}
+                />
+              );
+            }
+
+            const value = dateToString(date);
+
+            const hasEvent = PARENT_EVENTS.some(
+              (event) => event.date === value
+            );
+
+            const isSelected = selected === value;
+
+            return (
+              <button
+                key={value}
+                onClick={() => setSelected(value)}
+                style={{
+                  minHeight: 55,
+                  border: 0,
+                  borderRadius: 13,
+                  cursor: "pointer",
+                  background: isSelected
+                    ? "#173b2b"
+                    : "transparent",
+                  color: isSelected
+                    ? "white"
+                    : "#17231c",
+                  fontWeight: isSelected
+                    ? 900
+                    : 600,
+                }}
+              >
+                {date.getDate()}
+
+                <div
+                  style={{
+                    height: 8,
+                    marginTop: 3,
+                  }}
+                >
+                  {hasEvent && (
+                    <span
+                      style={{
+                        display: "inline-block",
+                        width: 6,
+                        height: 6,
+                        borderRadius: "50%",
+                        background: isSelected
+                          ? "#f3d899"
+                          : "#8b2635",
+                      }}
+                    />
+                  )}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <h3>Wybrany dzień</h3>
+
+      {events.length === 0 ? (
+        <div
+          style={{
+            ...cardStyle,
+            color: "#68736d",
+          }}
+        >
+          Brak wydarzeń.
+        </div>
+      ) : (
+        events.map((event) => (
+          <div
+            key={event.id}
+            style={{
+              ...cardStyle,
+              marginBottom: 10,
+            }}
+          >
+            <strong>{event.title}</strong>
+
+            <div
+              style={{
+                marginTop: 7,
+                color: "#657069",
+                lineHeight: 1.6,
+              }}
+            >
+              {event.time}
+              <br />
+              📍 {event.location}
+            </div>
+          </div>
+        ))
+      )}
+    </>
+  );
+}
+
+function MonthlyCalendar({
+  calendarDays,
+  monthName,
+  selectedDate,
+  reservations,
+  changeMonth,
+  selectCalendarDay,
+}) {
+  return (
+    <div
+      style={{
+        ...cardStyle,
+        marginBottom: 22,
+        padding: 18,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: 10,
+          marginBottom: 18,
+        }}
+      >
+        <button
+          style={secondaryStyle}
+          onClick={() => changeMonth(-1)}
+        >
+          ←
+        </button>
+
+        <div
+          style={{
+            textAlign: "center",
+            fontWeight: 900,
+            fontSize: 18,
+            textTransform: "capitalize",
+          }}
+        >
+          {monthName}
+        </div>
+
+        <button
+          style={secondaryStyle}
+          onClick={() => changeMonth(1)}
+        >
+          →
+        </button>
+      </div>
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(7,1fr)",
+          textAlign: "center",
+        }}
+      >
+        {[
+          "Pon",
+          "Wt",
+          "Śr",
+          "Czw",
+          "Pt",
+          "Sob",
+          "Nd",
+        ].map((day) => (
+          <div
+            key={day}
+            style={{
+              fontSize: 11,
+              fontWeight: 800,
+              color: "#78827c",
+              padding: 5,
+            }}
+          >
+            {day}
+          </div>
+        ))}
+
+        {calendarDays.map((date, index) => {
+          if (!date) {
+            return (
+              <div
+                key={`empty-${index}`}
+                style={{ minHeight: 55 }}
+              />
+            );
+          }
+
+          const dateString = dateToString(date);
+          const isSelected =
+            dateString === selectedDate;
+
+          const items = reservations.filter(
+            (item) => item.date === dateString
+          );
+
+          const hasNora = items.some(
+            (item) => item.location === "Nora"
+          );
+
+          const hasBasecamp = items.some(
+            (item) => item.location === "Basecamp"
+          );
+
+          const hasOther = items.some(
+            (item) =>
+              !MAIN_LOCATIONS.includes(item.location)
+          );
+
+          return (
+            <button
+              key={dateString}
+              onClick={() =>
+                selectCalendarDay(date)
+              }
+              style={{
+                border: 0,
+                background: isSelected
+                  ? "#173b2b"
+                  : "transparent",
+                color: isSelected
+                  ? "white"
+                  : "#17231c",
+                borderRadius: 14,
+                minHeight: 55,
+                cursor: "pointer",
+                fontWeight: isSelected ? 900 : 600,
+              }}
+            >
+              {date.getDate()}
+
+              <div
+                style={{
+                  height: 7,
+                  display: "flex",
+                  gap: 3,
+                  justifyContent: "center",
+                  marginTop: 4,
+                }}
+              >
+                {hasNora && (
+                  <Dot
+                    color={
+                      isSelected
+                        ? "#f1a5ae"
+                        : "#9d293b"
+                    }
+                  />
+                )}
+
+                {hasBasecamp && (
+                  <Dot
+                    color={
+                      isSelected
+                        ? "#bcd3b2"
+                        : "#607b54"
+                    }
+                  />
+                )}
+
+                {hasOther && (
+                  <Dot
+                    color={
+                      isSelected
+                        ? "#f3d899"
+                        : "#b98a2f"
+                    }
+                  />
+                )}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      <div
+        style={{
+          borderTop: "1px solid #edf0ed",
+          marginTop: 15,
+          paddingTop: 12,
+          display: "flex",
+          gap: 17,
+          fontSize: 11,
+          color: "#68736d",
+          flexWrap: "wrap",
+        }}
+      >
+        <LegendDot color="#9d293b" label="Nora" />
+        <LegendDot
+          color="#607b54"
+          label="Basecamp"
+        />
+        <LegendDot
+          color="#b98a2f"
+          label="Inne miejsce"
+        />
+      </div>
+    </div>
+  );
+}
+
+function AppHeader({ subtitle, logout }) {
+  return (
+    <header style={headerStyle}>
+      <div style={containerStyle}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            gap: 15,
+            alignItems: "flex-start",
+          }}
+        >
+          <div>
+            <div
+              style={{
+                fontSize: 12,
+                letterSpacing: 2.2,
+                opacity: 0.72,
+                fontWeight: 700,
+              }}
+            >
+              5 WDH • CZERWONE BERETY
+            </div>
+
+            <h1
+              style={{
+                margin: "7px 0 5px",
+                fontSize: 30,
+              }}
+            >
+              Centrum Dowodzenia
+            </h1>
+
+            <div style={{ opacity: 0.75 }}>
+              {subtitle}
+            </div>
+          </div>
+
+          <button
+            onClick={logout}
+            style={{
+              border: "1px solid rgba(255,255,255,.3)",
+              background: "rgba(255,255,255,.08)",
+              color: "white",
+              borderRadius: 11,
+              padding: "8px 10px",
+              cursor: "pointer",
+            }}
+          >
+            Wyloguj
+          </button>
+        </div>
+      </div>
+    </header>
+  );
+}
+
+function BottomNav({
+  tabs,
+  activeTab,
+  setActiveTab,
+}) {
+  return (
+    <nav
+      style={{
+        position: "fixed",
+        bottom: 0,
+        left: 0,
+        right: 0,
+        background: "rgba(255,255,255,.97)",
+        borderTop: "1px solid #dde1dd",
+        display: "flex",
+        justifyContent: "space-around",
+        zIndex: 50,
+        padding: "11px 3px 14px",
+        boxShadow:
+          "0 -5px 18px rgba(0,0,0,.04)",
+      }}
+    >
+      {tabs.map((tab) => (
+        <button
+          key={tab}
+          onClick={() => setActiveTab(tab)}
+          style={{
+            border: 0,
+            background: "transparent",
+            color:
+              activeTab === tab
+                ? "#8b2635"
+                : "#68736d",
+            fontWeight:
+              activeTab === tab ? 800 : 500,
+            cursor: "pointer",
+            padding: "6px 8px",
+          }}
+        >
+          {tab}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+function ModalBackground({ children, close }) {
+  return (
+    <div
+      onClick={close}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(10,20,15,.58)",
+        zIndex: 100,
+        display: "flex",
+        alignItems: "flex-end",
+        justifyContent: "center",
+      }}
+    >
+      <div
+        onClick={(event) =>
+          event.stopPropagation()
+        }
+        style={{
+          background: "#f7f6f1",
+          width: "100%",
+          maxWidth: 600,
+          borderRadius: "26px 26px 0 0",
+          padding: "23px 18px 28px",
+          boxSizing: "border-box",
+        }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function SimplePage({ title, text }) {
+  return (
+    <>
+      <h2>{title}</h2>
+
+      <div style={cardStyle}>
+        <p
+          style={{
+            color: "#69746d",
+            margin: 0,
+          }}
+        >
+          {text}
+        </p>
+      </div>
+    </>
+  );
+}
+
+function Dot({ color }) {
+  return (
+    <span
+      style={{
+        width: 6,
+        height: 6,
+        borderRadius: "50%",
+        background: color,
+      }}
+    />
   );
 }
 
@@ -1491,29 +1971,54 @@ function LegendDot({ color, label }) {
         gap: 6,
       }}
     >
-      <span
-        style={{
-          width: 7,
-          height: 7,
-          background: color,
-          borderRadius: "50%",
-        }}
-      />
-
+      <Dot color={color} />
       {label}
     </span>
   );
 }
 
-const inputStyle = {
-  display: "block",
-  width: "100%",
-  boxSizing: "border-box",
-  marginTop: 7,
-  padding: "13px 12px",
-  borderRadius: 12,
-  border: "1px solid #d2d7d2",
-  background: "white",
-  fontSize: 15,
+const appStyle = {
+  minHeight: "100vh",
+  background: "#f2f0e7",
   color: "#17231c",
+  fontFamily:
+    "Inter, Arial, Helvetica, sans-serif",
+  paddingBottom: 90,
+};
+
+const headerStyle = {
+  background:
+    "linear-gradient(135deg, #122d22 0%, #214c38 100%)",
+  color: "white",
+  padding: "28px 20px 32px",
+  borderRadius: "0 0 30px 30px",
+};
+
+const containerStyle = {
+  maxWidth: 900,
+  margin: "0 auto",
+};
+
+const containerPadding = {
+  ...containerStyle,
+  padding: "22px 15px",
+};
+
+const eyebrowStyle = {
+  textTransform: "uppercase",
+  fontSize: 12,
+  fontWeight: 800,
+  color: "#68746d",
+  letterSpacing: 1,
+};
+
+const centerScreen = {
+  minHeight: "100vh",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  background: "#f2f0e7",
+  color: "#173b2b",
+  fontFamily:
+    "Inter, Arial, Helvetica, sans-serif",
 };
