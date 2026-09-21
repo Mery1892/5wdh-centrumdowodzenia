@@ -343,6 +343,8 @@ export default function Home() {
   const [duesSaving, setDuesSaving] = useState(false);
   const [parentChildren, setParentChildren] = useState([]);
   const [documents, setDocuments] = useState([]);
+  const [documentAdminFilter, setDocumentAdminFilter] = useState("all");
+  const [documentSearch, setDocumentSearch] = useState("");
   const [documentModalOpen, setDocumentModalOpen] = useState(false);
   const [documentSaving, setDocumentSaving] = useState(false);
   const [documentForm, setDocumentForm] = useState({
@@ -2271,6 +2273,8 @@ export default function Home() {
     setMembershipDues([]);
     setParentChildren([]);
     setDocuments([]);
+    setDocumentAdminFilter("all");
+    setDocumentSearch("");
     setTaskMessages([]);
     setTaskChatTask(null);
     setPushStatus("unknown");
@@ -3203,11 +3207,7 @@ export default function Home() {
                     >
                       {reservation.isEvent
                         ? "wydarzenie"
-                        : `Rezerwuje: ${reservation.requesterName}${
-                            reservation.leader
-                              ? ` • ${reservation.leader}`
-                              : ""
-                          }`}
+                        : `Rezerwuje: ${reservation.requesterName}`}
                     </div>
                   </div>
 
@@ -4230,7 +4230,9 @@ export default function Home() {
                   }}
                 >
                   <div>
-                    <div style={eyebrowStyle}>Pliki drużyny</div>
+                    <div style={eyebrowStyle}>
+                      {isAdmin ? "PANEL ADMINA • PLIKI DRUŻYNY" : "PLIKI DRUŻYNY"}
+                    </div>
                     <h2 style={{ marginTop: 5 }}>Dokumenty</h2>
                   </div>
 
@@ -4248,101 +4250,383 @@ export default function Home() {
                   )}
                 </div>
 
-                {documents.length === 0 ? (
-                  <div
-                    style={{
-                      ...cardStyle,
-                      color: "#68736d",
-                    }}
-                  >
-                    Brak dokumentów dostępnych dla Twojego konta.
-                  </div>
-                ) : (
-                  <div style={{ display: "grid", gap: 10 }}>
-                    {documents.map((item) => {
-                      const patrol = patrols.find(
-                        (p) => Number(p.id) === Number(item.patrol_id)
-                      );
-
-                      const audienceLabel =
-                        item.audience_type === "parents"
-                          ? "DLA RODZICÓW"
-                          : item.audience_type === "members"
-                          ? "DLA HARCERZY"
-                          : item.audience_type === "patrol"
-                          ? `ZASTĘP • ${patrol?.name || ""}`
-                          : item.audience_type === "patrol_leaders"
-                          ? `ZASTĘPOWI • ${patrol?.name || ""}`
-                          : item.audience_type === "user"
-                          ? "DLA KONKRETNEJ OSOBY"
-                          : "DLA WSZYSTKICH";
-
-                      return (
-                        <div
-                          key={`doc-${item.id}`}
-                          style={cardStyle}
+                {isAdmin && (
+                  <>
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(2, 1fr)",
+                        gap: 9,
+                        marginBottom: 12,
+                      }}
+                    >
+                      {[
+                        {
+                          key: "parents",
+                          icon: "👨‍👩‍👧",
+                          label: "Rodzice",
+                          count: documents.filter(
+                            (item) => item.audience_type === "parents"
+                          ).length,
+                        },
+                        {
+                          key: "members",
+                          icon: "⚜️",
+                          label: "Harcerze",
+                          count: documents.filter(
+                            (item) => item.audience_type === "members"
+                          ).length,
+                        },
+                        {
+                          key: "patrol",
+                          icon: "🏕️",
+                          label: "Zastępy",
+                          count: documents.filter(
+                            (item) => item.audience_type === "patrol"
+                          ).length,
+                        },
+                        {
+                          key: "user",
+                          icon: "👤",
+                          label: "Konkretne osoby",
+                          count: documents.filter(
+                            (item) => item.audience_type === "user"
+                          ).length,
+                        },
+                      ].map((item) => (
+                        <button
+                          key={`doc-stat-${item.key}`}
+                          onClick={() =>
+                            setDocumentAdminFilter(item.key)
+                          }
+                          style={{
+                            ...cardStyle,
+                            border: 0,
+                            cursor: "pointer",
+                            textAlign: "left",
+                            padding: 13,
+                            boxShadow: "none",
+                            background:
+                              documentAdminFilter === item.key
+                                ? "#eef4ef"
+                                : "white",
+                            outline:
+                              documentAdminFilter === item.key
+                                ? "2px solid #607b54"
+                                : "1px solid #e1e5e1",
+                          }}
                         >
-                          <div style={eyebrowStyle}>
-                            {audienceLabel}
+                          <div style={{ fontSize: 20 }}>{item.icon}</div>
+                          <strong
+                            style={{
+                              display: "block",
+                              marginTop: 5,
+                            }}
+                          >
+                            {item.label}
+                          </strong>
+                          <div
+                            style={{
+                              fontSize: 12,
+                              color: "#6a756e",
+                              marginTop: 3,
+                            }}
+                          >
+                            {item.count} plików
                           </div>
+                        </button>
+                      ))}
+                    </div>
 
-                          <h3 style={{ margin: "6px 0" }}>
-                            {item.title}
-                          </h3>
+                    <div
+                      style={{
+                        ...cardStyle,
+                        boxShadow: "none",
+                        marginBottom: 14,
+                        background: "#f7f5ee",
+                      }}
+                    >
+                      <strong>Filtruj dokumenty</strong>
 
-                          {item.description && (
-                            <p
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: 7,
+                          flexWrap: "wrap",
+                          marginTop: 10,
+                        }}
+                      >
+                        {[
+                          ["all", "Wszystkie"],
+                          ["parents", "Rodzice"],
+                          ["members", "Harcerze"],
+                          ["patrol", "Zastępy"],
+                          ["patrol_leaders", "Zastępowi"],
+                          ["user", "Konkretne osoby"],
+                          ["all_users", "Wszyscy"],
+                        ].map(([key, label]) => (
+                          <button
+                            key={`doc-filter-${key}`}
+                            onClick={() =>
+                              setDocumentAdminFilter(key)
+                            }
+                            style={
+                              documentAdminFilter === key
+                                ? primaryStyle
+                                : secondaryStyle
+                            }
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+
+                      <input
+                        value={documentSearch}
+                        onChange={(event) =>
+                          setDocumentSearch(event.target.value)
+                        }
+                        placeholder="Szukaj po nazwie dokumentu lub odbiorcy..."
+                        style={{
+                          ...inputStyle,
+                          marginTop: 10,
+                        }}
+                      />
+                    </div>
+                  </>
+                )}
+
+                {(() => {
+                  const visibleDocuments = documents.filter((item) => {
+                    if (isAdmin) {
+                      const typeMatches =
+                        documentAdminFilter === "all" ||
+                        (documentAdminFilter === "all_users"
+                          ? item.audience_type === "all"
+                          : item.audience_type === documentAdminFilter);
+
+                      if (!typeMatches) return false;
+                    }
+
+                    const patrol = patrols.find(
+                      (p) => Number(p.id) === Number(item.patrol_id)
+                    );
+
+                    const targetPerson = people.find(
+                      (person) => person.id === item.target_user_id
+                    );
+
+                    const search = documentSearch.trim().toLowerCase();
+
+                    if (!search) return true;
+
+                    const haystack = [
+                      item.title,
+                      item.description,
+                      item.file_name,
+                      patrol?.name,
+                      targetPerson?.full_name,
+                      targetPerson?.name,
+                    ]
+                      .filter(Boolean)
+                      .join(" ")
+                      .toLowerCase();
+
+                    return haystack.includes(search);
+                  });
+
+                  if (visibleDocuments.length === 0) {
+                    return (
+                      <div
+                        style={{
+                          ...cardStyle,
+                          color: "#68736d",
+                        }}
+                      >
+                        {documents.length === 0
+                          ? "Brak dokumentów dostępnych dla Twojego konta."
+                          : "Brak dokumentów pasujących do wybranego filtra."}
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div style={{ display: "grid", gap: 10 }}>
+                      {visibleDocuments.map((item) => {
+                        const patrol = patrols.find(
+                          (p) => Number(p.id) === Number(item.patrol_id)
+                        );
+
+                        const targetPerson = people.find(
+                          (person) =>
+                            person.id === item.target_user_id
+                        );
+
+                        const uploader = people.find(
+                          (person) => person.id === item.uploaded_by
+                        );
+
+                        const audienceLabel =
+                          item.audience_type === "parents"
+                            ? "RODZICE"
+                            : item.audience_type === "members"
+                            ? "HARCERZE"
+                            : item.audience_type === "patrol"
+                            ? `ZASTĘP: ${patrol?.name || "nieznany"}`
+                            : item.audience_type === "patrol_leaders"
+                            ? `ZASTĘPOWI: ${patrol?.name || "nieznany"}`
+                            : item.audience_type === "user"
+                            ? `OSOBA: ${
+                                targetPerson?.full_name ||
+                                targetPerson?.name ||
+                                "nieznany użytkownik"
+                              }`
+                            : "WSZYSCY";
+
+                        const audienceIcon =
+                          item.audience_type === "parents"
+                            ? "👨‍👩‍👧"
+                            : item.audience_type === "members"
+                            ? "⚜️"
+                            : item.audience_type === "patrol"
+                            ? "🏕️"
+                            : item.audience_type === "patrol_leaders"
+                            ? "🧭"
+                            : item.audience_type === "user"
+                            ? "👤"
+                            : "📢";
+
+                        return (
+                          <div
+                            key={`doc-${item.id}`}
+                            style={{
+                              ...cardStyle,
+                              borderLeft:
+                                item.audience_type === "parents"
+                                  ? "5px solid #8b2635"
+                                  : item.audience_type === "members"
+                                  ? "5px solid #607b54"
+                                  : item.audience_type === "user"
+                                  ? "5px solid #b98a2f"
+                                  : "5px solid #506f80",
+                            }}
+                          >
+                            <div
                               style={{
-                                color: "#59675f",
-                                lineHeight: 1.55,
+                                display: "flex",
+                                justifyContent: "space-between",
+                                gap: 10,
+                                alignItems: "flex-start",
                               }}
                             >
-                              {item.description}
-                            </p>
-                          )}
+                              <div>
+                                <div style={eyebrowStyle}>
+                                  {audienceIcon} ODBIORCY: {audienceLabel}
+                                </div>
 
-                          <div
-                            style={{
-                              color: "#7a837e",
-                              fontSize: 12,
-                              marginBottom: 10,
-                            }}
-                          >
-                            📎 {item.file_name}
-                          </div>
+                                <h3 style={{ margin: "6px 0" }}>
+                                  {item.title}
+                                </h3>
+                              </div>
 
-                          <div
-                            style={{
-                              display: "flex",
-                              gap: 8,
-                              flexWrap: "wrap",
-                            }}
-                          >
-                            <button
-                              style={primaryStyle}
-                              onClick={() => openDocument(item)}
-                            >
-                              Otwórz
-                            </button>
+                              {isAdmin && (
+                                <span
+                                  style={{
+                                    background: "#f1f3f1",
+                                    borderRadius: 20,
+                                    padding: "5px 8px",
+                                    fontSize: 10,
+                                    fontWeight: 900,
+                                    whiteSpace: "nowrap",
+                                    color: "#536159",
+                                  }}
+                                >
+                                  ID {item.id}
+                                </span>
+                              )}
+                            </div>
 
                             {isAdmin && (
-                              <button
+                              <div
                                 style={{
-                                  ...secondaryStyle,
-                                  color: "#8b2635",
-                                  borderColor: "#dfc1c5",
+                                  margin: "10px 0",
+                                  padding: 10,
+                                  borderRadius: 12,
+                                  background: "#f7f5ee",
+                                  color: "#59675f",
+                                  fontSize: 12,
+                                  lineHeight: 1.6,
                                 }}
-                                onClick={() => deleteDocument(item)}
                               >
-                                Usuń
-                              </button>
+                                <strong>Udostępniono:</strong>{" "}
+                                {audienceLabel}
+                                <br />
+                                <strong>Dodał:</strong>{" "}
+                                {uploader?.full_name ||
+                                  uploader?.name ||
+                                  "użytkownik"}
+                                <br />
+                                <strong>Data:</strong>{" "}
+                                {new Date(item.created_at).toLocaleString(
+                                  "pl-PL"
+                                )}
+                              </div>
                             )}
+
+                            {item.description && (
+                              <p
+                                style={{
+                                  color: "#59675f",
+                                  lineHeight: 1.55,
+                                }}
+                              >
+                                {item.description}
+                              </p>
+                            )}
+
+                            <div
+                              style={{
+                                color: "#7a837e",
+                                fontSize: 12,
+                                marginBottom: 10,
+                              }}
+                            >
+                              📎 {item.file_name}
+                            </div>
+
+                            <div
+                              style={{
+                                display: "flex",
+                                gap: 8,
+                                flexWrap: "wrap",
+                              }}
+                            >
+                              <button
+                                style={primaryStyle}
+                                onClick={() => openDocument(item)}
+                              >
+                                Otwórz
+                              </button>
+
+                              {isAdmin && (
+                                <button
+                                  style={{
+                                    ...secondaryStyle,
+                                    color: "#8b2635",
+                                    borderColor: "#dfc1c5",
+                                  }}
+                                  onClick={() => deleteDocument(item)}
+                                >
+                                  Usuń
+                                </button>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
               </>
             )}
 
@@ -7160,8 +7444,6 @@ export default function Home() {
             📍 {detailsOpen.location}
             <br />
             👤 Rezerwuje: {detailsOpen.requesterName || "Użytkownik"}
-            <br />
-            ⚜️ {detailsOpen.leader || detailsOpen.patrol}
             <br />
             Status: {approvalStatusLabel(detailsOpen.approvalStatus)}
           </p>
