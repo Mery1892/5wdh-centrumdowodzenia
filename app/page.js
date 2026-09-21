@@ -15,6 +15,8 @@ const supabase = createClient(
   }
 );
 
+const APP_URL = "https://5-wdh.vercel.app";
+
 const VAPID_PUBLIC_KEY = "BFgs3cj7ghz3zLXNiy8bt6I2GOA3MPuZ6N0fByYAV8eSCc34hE8h00duN1hQL-Ii0IHUHAS980TZqFwa9hCn_UU";
 
 function urlBase64ToUint8Array(base64String) {
@@ -307,6 +309,10 @@ export default function Home() {
   const [password, setPassword] = useState("");
   const [loginError, setLoginError] = useState("");
   const [loggingIn, setLoggingIn] = useState(false);
+  const [recoveryMode, setRecoveryMode] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmNewPassword, setConfirmNewPassword] = useState("");
+  const [recoverySaving, setRecoverySaving] = useState(false);
 
   const [activeTab, setActiveTab] = useState("Grafik");
 
@@ -444,8 +450,14 @@ export default function Home() {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, newSession) => {
+    } = supabase.auth.onAuthStateChange(async (authEvent, newSession) => {
       setSession(newSession);
+
+      if (authEvent === "PASSWORD_RECOVERY") {
+        setRecoveryMode(true);
+        setLoading(false);
+        return;
+      }
 
       if (newSession?.user) {
         await loadRole(newSession.user.id);
@@ -2911,6 +2923,90 @@ export default function Home() {
     setLoggingIn(false);
   }
 
+  async function requestPasswordReset() {
+    const cleanEmail = email.trim();
+
+    if (!cleanEmail) {
+      setLoginError("Najpierw wpisz adres e-mail.");
+      return;
+    }
+
+    setLoggingIn(true);
+    setLoginError("");
+    setSignupMessage("");
+
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(
+        cleanEmail,
+        {
+          redirectTo: `${APP_URL}/`,
+        }
+      );
+
+      if (error) throw error;
+
+      setSignupMessage(
+        "Wysłaliśmy link do zmiany hasła. Sprawdź skrzynkę e-mail i spam."
+      );
+    } catch (error) {
+      console.error("Błąd resetu hasła:", error);
+      setLoginError(
+        error?.message || "Nie udało się wysłać linku do zmiany hasła."
+      );
+    } finally {
+      setLoggingIn(false);
+    }
+  }
+
+  async function saveRecoveredPassword(event) {
+    event.preventDefault();
+
+    if (newPassword.length < 6) {
+      alert("Nowe hasło musi mieć co najmniej 6 znaków.");
+      return;
+    }
+
+    if (newPassword !== confirmNewPassword) {
+      alert("Hasła nie są takie same.");
+      return;
+    }
+
+    setRecoverySaving(true);
+
+    try {
+      const { error } = await supabase.auth.updateUser({
+        password: newPassword,
+      });
+
+      if (error) throw error;
+
+      await supabase.auth.signOut();
+
+      setRecoveryMode(false);
+      setNewPassword("");
+      setConfirmNewPassword("");
+      setSession(null);
+      setRole(null);
+      setCurrentProfile(null);
+      setSignupMode(false);
+      setLoginError("");
+      setSignupMessage(
+        "Hasło zostało zmienione. Możesz się teraz zalogować."
+      );
+
+      if (typeof window !== "undefined") {
+        window.history.replaceState({}, document.title, "/");
+      }
+    } catch (error) {
+      console.error("Błąd zmiany hasła:", error);
+      alert(
+        `Nie udało się zmienić hasła.\n\n${error?.message || ""}`
+      );
+    } finally {
+      setRecoverySaving(false);
+    }
+  }
+
   async function login(event) {
     event.preventDefault();
 
@@ -2959,6 +3055,9 @@ export default function Home() {
     setDeepLinkHandled(false);
     setMyPatrolIds([]);
     setActiveTab("Grafik");
+    setRecoveryMode(false);
+    setNewPassword("");
+    setConfirmNewPassword("");
   }
 
   async function handleReservationAudienceChange(value) {
@@ -3364,6 +3463,19 @@ export default function Home() {
     }
   }
 
+  if (recoveryMode) {
+    return (
+      <PasswordRecoveryScreen
+        newPassword={newPassword}
+        setNewPassword={setNewPassword}
+        confirmNewPassword={confirmNewPassword}
+        setConfirmNewPassword={setConfirmNewPassword}
+        saving={recoverySaving}
+        savePassword={saveRecoveredPassword}
+      />
+    );
+  }
+
   if (loading) {
     return (
       <div style={centerScreen}>
@@ -3389,6 +3501,7 @@ export default function Home() {
         signupMessage={signupMessage}
         register={register}
         setLoginError={setLoginError}
+        requestPasswordReset={requestPasswordReset}
       />
     );
   }
@@ -9216,6 +9329,106 @@ export default function Home() {
     </main>
   );
 }
+function PasswordRecoveryScreen({
+  newPassword,
+  setNewPassword,
+  confirmNewPassword,
+  setConfirmNewPassword,
+  saving,
+  savePassword,
+}) {
+  return (
+    <main
+      style={{
+        minHeight: "100vh",
+        background: "linear-gradient(160deg, #102a20, #214c38)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 20,
+        fontFamily: "Inter, Arial, Helvetica, sans-serif",
+      }}
+    >
+      <div
+        style={{
+          width: "100%",
+          maxWidth: 420,
+          background: "#f5f3eb",
+          borderRadius: 26,
+          padding: "32px 25px",
+          boxShadow: "0 20px 60px rgba(0,0,0,.25)",
+        }}
+      >
+        <div
+          style={{
+            color: "#8b2635",
+            fontWeight: 900,
+            letterSpacing: 2,
+            fontSize: 12,
+          }}
+        >
+          5 WDH • CZERWONE BERETY
+        </div>
+
+        <h1 style={{ color: "#17231c", marginBottom: 6 }}>
+          Ustaw nowe hasło
+        </h1>
+
+        <p style={{ color: "#68736d", lineHeight: 1.55 }}>
+          Link z e-maila zadziałał. Wpisz teraz nowe hasło do swojego konta.
+        </p>
+
+        <form
+          onSubmit={savePassword}
+          style={{ display: "grid", gap: 14, marginTop: 20 }}
+        >
+          <label>
+            <strong>Nowe hasło</strong>
+            <input
+              type="password"
+              required
+              minLength={6}
+              autoComplete="new-password"
+              value={newPassword}
+              onChange={(event) =>
+                setNewPassword(event.target.value)
+              }
+              style={inputStyle}
+            />
+          </label>
+
+          <label>
+            <strong>Powtórz nowe hasło</strong>
+            <input
+              type="password"
+              required
+              minLength={6}
+              autoComplete="new-password"
+              value={confirmNewPassword}
+              onChange={(event) =>
+                setConfirmNewPassword(event.target.value)
+              }
+              style={inputStyle}
+            />
+          </label>
+
+          <button
+            type="submit"
+            disabled={saving}
+            style={{
+              ...primaryStyle,
+              padding: 14,
+              opacity: saving ? 0.6 : 1,
+            }}
+          >
+            {saving ? "Zmieniam hasło..." : "Zmień hasło"}
+          </button>
+        </form>
+      </div>
+    </main>
+  );
+}
+
 function LoginScreen({
   email,
   setEmail,
@@ -9231,6 +9444,7 @@ function LoginScreen({
   signupMessage,
   register,
   setLoginError,
+  requestPasswordReset,
 }) {
   return (
     <main
@@ -9389,6 +9603,24 @@ function LoginScreen({
               ? "Mam już konto — zaloguj się"
               : "Nie mam konta — załóż konto"}
           </button>
+
+          {!signupMode && (
+            <button
+              type="button"
+              disabled={loggingIn}
+              onClick={requestPasswordReset}
+              style={{
+                border: 0,
+                background: "transparent",
+                color: "#8b2635",
+                fontWeight: 800,
+                cursor: "pointer",
+                padding: "5px 8px",
+              }}
+            >
+              Nie pamiętam hasła
+            </button>
+          )}
         </form>
       </div>
     </main>
