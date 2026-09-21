@@ -337,6 +337,9 @@ export default function Home() {
   const [pushBusy, setPushBusy] = useState(false);
   const [membershipDues, setMembershipDues] = useState([]);
   const [duesSaving, setDuesSaving] = useState(false);
+  const [duesViewYear, setDuesViewYear] = useState(new Date().getFullYear());
+  const [adminDueYear, setAdminDueYear] = useState(new Date().getFullYear());
+  const [adminDueQuarter, setAdminDueQuarter] = useState(quarterForDate());
   const [deepLinkHandled, setDeepLinkHandled] = useState(false);
   const [moreSection, setMoreSection] = useState("menu");
 
@@ -1573,6 +1576,13 @@ export default function Home() {
       fullName: profile.full_name || "",
       role: normalizeRole(profile.role || "member"),
       functionTitle: profile.function_title || "",
+      functionMode: ["Przyboczny", "Zastępowy", "Podzastępowy"].includes(
+        profile.function_title || ""
+      )
+        ? profile.function_title
+        : profile.function_title
+        ? "custom"
+        : "",
       membershipNumber: profile.membership_number || "",
       isStaff: Boolean(profile.is_staff),
       patrolId: membership?.patrol_id ? String(membership.patrol_id) : "",
@@ -1586,6 +1596,14 @@ export default function Home() {
 
     if (!userEditor.fullName.trim()) {
       alert("Wpisz imię i nazwisko.");
+      return;
+    }
+
+    if (
+      userEditor.functionMode === "custom" &&
+      !userEditor.functionTitle.trim()
+    ) {
+      alert("Wpisz własną nazwę funkcji.");
       return;
     }
 
@@ -3914,7 +3932,35 @@ export default function Home() {
                   </strong>
                 </div>
 
-                <h3>Rok {new Date().getFullYear()}</h3>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 8,
+                    marginBottom: 10,
+                  }}
+                >
+                  <button
+                    style={secondaryStyle}
+                    onClick={() =>
+                      setDuesViewYear((year) => year - 1)
+                    }
+                  >
+                    ← {duesViewYear - 1}
+                  </button>
+
+                  <h3 style={{ margin: 0 }}>Rok {duesViewYear}</h3>
+
+                  <button
+                    style={secondaryStyle}
+                    onClick={() =>
+                      setDuesViewYear((year) => year + 1)
+                    }
+                  >
+                    {duesViewYear + 1} →
+                  </button>
+                </div>
 
                 <div
                   style={{
@@ -3927,13 +3973,13 @@ export default function Home() {
                   {[1, 2, 3, 4].map((quarter) => {
                     const due = dueFor(
                       session.user.id,
-                      new Date().getFullYear(),
+                      duesViewYear,
                       quarter
                     );
 
                     return (
                       <div
-                        key={`own-due-${quarter}`}
+                        key={`own-due-${duesViewYear}-${quarter}`}
                         style={{
                           ...cardStyle,
                           boxShadow: "none",
@@ -3967,14 +4013,137 @@ export default function Home() {
                 {isAdmin && (
                   <>
                     <div style={eyebrowStyle}>PANEL ADMINA</div>
+
+                    <div
+                      style={{
+                        ...cardStyle,
+                        boxShadow: "none",
+                        marginBottom: 12,
+                        background: "#f7f5ee",
+                      }}
+                    >
+                      <strong>Wybierz okres do oznaczania</strong>
+
+                      <div
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "1fr 1fr",
+                          gap: 9,
+                          marginTop: 10,
+                        }}
+                      >
+                        <label>
+                          <div
+                            style={{
+                              fontSize: 12,
+                              fontWeight: 800,
+                              marginBottom: 5,
+                              color: "#5d6962",
+                            }}
+                          >
+                            Rok
+                          </div>
+
+                          <input
+                            type="number"
+                            min="2020"
+                            max="2100"
+                            value={adminDueYear}
+                            onChange={(event) =>
+                              setAdminDueYear(
+                                Number(event.target.value) ||
+                                  new Date().getFullYear()
+                              )
+                            }
+                            style={inputStyle}
+                          />
+                        </label>
+
+                        <label>
+                          <div
+                            style={{
+                              fontSize: 12,
+                              fontWeight: 800,
+                              marginBottom: 5,
+                              color: "#5d6962",
+                            }}
+                          >
+                            Kwartał
+                          </div>
+
+                          <select
+                            value={adminDueQuarter}
+                            onChange={(event) =>
+                              setAdminDueQuarter(
+                                Number(event.target.value)
+                              )
+                            }
+                            style={inputStyle}
+                          >
+                            <option value={1}>I kwartał</option>
+                            <option value={2}>II kwartał</option>
+                            <option value={3}>III kwartał</option>
+                            <option value={4}>IV kwartał</option>
+                          </select>
+                        </label>
+                      </div>
+
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: 8,
+                          flexWrap: "wrap",
+                          marginTop: 10,
+                        }}
+                      >
+                        <button
+                          style={secondaryStyle}
+                          onClick={() => {
+                            const quarter =
+                              adminDueQuarter === 1
+                                ? 4
+                                : adminDueQuarter - 1;
+                            const year =
+                              adminDueQuarter === 1
+                                ? adminDueYear - 1
+                                : adminDueYear;
+
+                            setAdminDueQuarter(quarter);
+                            setAdminDueYear(year);
+                          }}
+                        >
+                          ← poprzedni kwartał
+                        </button>
+
+                        <button
+                          style={secondaryStyle}
+                          onClick={() => {
+                            const quarter =
+                              adminDueQuarter === 4
+                                ? 1
+                                : adminDueQuarter + 1;
+                            const year =
+                              adminDueQuarter === 4
+                                ? adminDueYear + 1
+                                : adminDueYear;
+
+                            setAdminDueQuarter(quarter);
+                            setAdminDueYear(year);
+                          }}
+                        >
+                          następny kwartał →
+                        </button>
+                      </div>
+                    </div>
+
                     <h3
                       style={{
                         marginTop: 5,
                         marginBottom: 10,
                       }}
                     >
-                      {quarterLabel(quarterForDate())}{" "}
-                      {new Date().getFullYear()} — drużyna
+                      {quarterLabel(adminDueQuarter)}{" "}
+                      {adminDueYear} — drużyna
                     </h3>
 
                     <div style={{ display: "grid", gap: 9 }}>
@@ -3986,13 +4155,13 @@ export default function Home() {
                         .map((person) => {
                           const due = dueFor(
                             person.id,
-                            new Date().getFullYear(),
-                            quarterForDate()
+                            adminDueYear,
+                            adminDueQuarter
                           );
 
                           return (
                             <div
-                              key={`admin-due-${person.id}`}
+                              key={`admin-due-${adminDueYear}-${adminDueQuarter}-${person.id}`}
                               style={{
                                 ...cardStyle,
                                 boxShadow: "none",
@@ -4035,8 +4204,8 @@ export default function Home() {
                                 onClick={() =>
                                   setDuePaid(
                                     person.id,
-                                    new Date().getFullYear(),
-                                    quarterForDate(),
+                                    adminDueYear,
+                                    adminDueQuarter,
                                     !due?.paid
                                   )
                                 }
@@ -4724,17 +4893,47 @@ export default function Home() {
 
             <label>
               <strong>Funkcja</strong>
-              <input
-                value={userEditor.functionTitle}
-                onChange={(event) =>
+
+              <select
+                value={userEditor.functionMode || ""}
+                onChange={(event) => {
+                  const value = event.target.value;
+
                   setUserEditor({
                     ...userEditor,
-                    functionTitle: event.target.value,
-                  })
-                }
-                placeholder="np. przyboczny, zastępowa..."
+                    functionMode: value,
+                    functionTitle:
+                      value === "custom"
+                        ? ""
+                        : value,
+                  });
+                }}
                 style={inputStyle}
-              />
+              >
+                <option value="">Brak funkcji</option>
+                <option value="Przyboczny">Przyboczny</option>
+                <option value="Zastępowy">Zastępowy</option>
+                <option value="Podzastępowy">Podzastępowy</option>
+                <option value="custom">Wpisz własne</option>
+              </select>
+
+              {userEditor.functionMode === "custom" && (
+                <input
+                  value={userEditor.functionTitle}
+                  onChange={(event) =>
+                    setUserEditor({
+                      ...userEditor,
+                      functionTitle: event.target.value,
+                    })
+                  }
+                  placeholder="Wpisz własną funkcję"
+                  style={{
+                    ...inputStyle,
+                    marginTop: 8,
+                  }}
+                  autoFocus
+                />
+              )}
             </label>
 
             <label
