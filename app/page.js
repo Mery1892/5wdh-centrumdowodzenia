@@ -135,6 +135,10 @@ function halfHourStarts(start, end) {
   return result;
 }
 
+function rangesOverlap(startA, endA, startB, endB) {
+  return startA < endB && startB < endA;
+}
+
 const cardStyle = {
   background: "white",
   borderRadius: 18,
@@ -226,7 +230,7 @@ export default function Home() {
   const [saving, setSaving] = useState(false);
 
   const [form, setForm] = useState({
-    reserver: "whole",
+    reserver: "",
     location: "Nora",
     customLocation: "",
     startTime: "17:30",
@@ -298,128 +302,84 @@ export default function Home() {
         { data: patrolData, error: patrolError },
         { data: slotData, error: slotError },
         { data: reservationData, error: reservationError },
+        { data: scheduleEventData, error: scheduleEventError },
       ] = await Promise.all([
-        supabase
-          .from("patrols")
-          .select("id, name, leader_name")
-          .order("id"),
-
+        supabase.from("patrols").select("id, name, leader_name").order("id"),
         supabase
           .from("schedule_slots")
-          .select(
-            "id, slot_date, start_time, end_time, location, notes, created_by, event_id"
-          )
+          .select("id, slot_date, start_time, end_time, location, notes, created_by, event_id")
           .order("slot_date")
           .order("start_time"),
-
         supabase
           .from("schedule_reservations")
-          .select(
-            "id, slot_id, patrol_id, reserved_by, created_at, reservation_name, reservation_group"
-          ),
+          .select("id, slot_id, patrol_id, reserved_by, created_at, reservation_name, reservation_group"),
+        supabase
+          .from("events")
+          .select("id,title,event_date,start_time,end_time,location,created_by"),
       ]);
 
       if (patrolError) throw patrolError;
       if (slotError) throw slotError;
       if (reservationError) throw reservationError;
+      if (scheduleEventError) throw scheduleEventError;
 
-      const loadedPatrols =
-        patrolData?.length > 0 ? patrolData : FALLBACK_PATROLS;
-
+      const loadedPatrols = patrolData?.length > 0 ? patrolData : FALLBACK_PATROLS;
       setPatrols(loadedPatrols);
 
-      const rawManual = (reservationData || [])
-        .map((reservation) => {
-          const slot = (slotData || []).find(
-            (item) => Number(item.id) === Number(reservation.slot_id)
-          );
-
-          const patrol = (patrolData || []).find(
-            (item) => Number(item.id) === Number(reservation.patrol_id)
-          );
-
-          if (!slot) return null;
-
-          return {
-            id: reservation.id,
-            slotId: slot.id,
-            patrolId: reservation.patrol_id,
-            reservedBy: reservation.reserved_by,
-            reservationGroup: reservation.reservation_group,
-            date: slot.slot_date,
-            time: normalizeTime(slot.start_time),
-            endTime: normalizeTime(slot.end_time),
-            location: slot.location,
-            notes: slot.notes,
-            patrol:
-              reservation.reservation_name ||
-              patrol?.name ||
-              "Zastęp",
-            leader:
-              reservation.reservation_name === "Cała drużyna"
-                ? "rezerwacja drużyny"
-                : patrol?.leader_name || "",
-            isEvent: false,
-          };
-        })
-        .filter(Boolean);
+      const rawManual = (reservationData || []).map((reservation) => {
+        const slot = (slotData || []).find((item) => Number(item.id) === Number(reservation.slot_id));
+        const patrol = (patrolData || []).find((item) => Number(item.id) === Number(reservation.patrol_id));
+        if (!slot) return null;
+        return {
+          id: reservation.id,
+          slotId: slot.id,
+          patrolId: reservation.patrol_id,
+          reservedBy: reservation.reserved_by,
+          reservationGroup: reservation.reservation_group,
+          date: slot.slot_date,
+          time: normalizeTime(slot.start_time),
+          endTime: normalizeTime(slot.end_time),
+          location: slot.location,
+          notes: slot.notes,
+          patrol: reservation.reservation_name || patrol?.name || "Zastęp",
+          leader: reservation.reservation_name === "Cała drużyna" ? "rezerwacja drużyny" : patrol?.leader_name || "",
+          isEvent: false,
+        };
+      }).filter(Boolean);
 
       const groupedManual = [];
       const groups = new Map();
-
       for (const item of rawManual) {
-        const key = item.reservationGroup
-          ? `group-${item.reservationGroup}`
-          : `single-${item.id}`;
-
+        const key = item.reservationGroup ? `group-${item.reservationGroup}` : `single-${item.id}`;
         if (!groups.has(key)) groups.set(key, []);
         groups.get(key).push(item);
       }
-
       for (const items of groups.values()) {
         items.sort((a, b) => a.time.localeCompare(b.time));
-
         const first = items[0];
         const last = items[items.length - 1];
-
         groupedManual.push({
           ...first,
-          id: first.reservationGroup
-            ? `group-${first.reservationGroup}`
-            : first.id,
-          reservationIds: items.map((item) => item.id),
-          slotIds: items.map((item) => item.slotId),
+          id: first.reservationGroup ? `group-${first.reservationGroup}` : first.id,
+          reservationIds: items.map((x) => x.id),
+          slotIds: items.map((x) => x.slotId),
           endTime: last.endTime,
         });
       }
 
       const eventGroups = new Map();
-
-      for (const slot of (slotData || []).filter(
-        (item) => item.event_id
-      )) {
+      for (const slot of (slotData || []).filter((item) => item.event_id)) {
         const key = String(slot.event_id);
-
         if (!eventGroups.has(key)) eventGroups.set(key, []);
         eventGroups.get(key).push(slot);
       }
-
       const eventBlocks = [];
-
       for (const [eventId, slots] of eventGroups.entries()) {
-        slots.sort((a, b) =>
-          normalizeTime(a.start_time).localeCompare(
-            normalizeTime(b.start_time)
-          )
-        );
-
+        slots.sort((a, b) => normalizeTime(a.start_time).localeCompare(normalizeTime(b.start_time)));
         const first = slots[0];
         const last = slots[slots.length - 1];
-
         eventBlocks.push({
           id: `event-${eventId}`,
-          slotId: first.id,
-          slotIds: slots.map((slot) => slot.id),
           eventId: Number(eventId),
           reservedBy: first.created_by,
           date: first.slot_date,
@@ -433,13 +393,28 @@ export default function Home() {
         });
       }
 
-      setReservations([...groupedManual, ...eventBlocks]);
+      const linkedEventIds = new Set(eventBlocks.map((item) => Number(item.eventId)));
+      const legacyEventBlocks = (scheduleEventData || [])
+        .filter((eventItem) => MAIN_LOCATIONS.includes(eventItem.location))
+        .filter((eventItem) => !linkedEventIds.has(Number(eventItem.id)))
+        .map((eventItem) => ({
+          id: `event-${eventItem.id}`,
+          eventId: Number(eventItem.id),
+          reservedBy: eventItem.created_by,
+          date: eventItem.event_date,
+          time: normalizeTime(eventItem.start_time),
+          endTime: normalizeTime(eventItem.end_time) || addMinutes(normalizeTime(eventItem.start_time), 30),
+          location: eventItem.location,
+          notes: eventItem.title,
+          patrol: eventItem.title || "Wydarzenie",
+          leader: "wydarzenie drużyny",
+          isEvent: true,
+        }));
+
+      setReservations([...groupedManual, ...eventBlocks, ...legacyEventBlocks]);
     } catch (error) {
       console.error("Błąd pobierania grafiku:", error);
-
-      alert(
-        "Nie udało się pobrać Grafiku z bazy. Jeśli błąd się powtórzy, podeślij mi ekran."
-      );
+      alert("Nie udało się pobrać Grafiku z bazy. Jeśli błąd się powtórzy, podeślij mi ekran.");
     } finally {
       setScheduleLoading(false);
     }
@@ -470,11 +445,8 @@ export default function Home() {
       if (eventError) throw eventError;
 
       setEvents(eventData || []);
-
       setMyPatrolIds(
-        (membershipData || []).map((item) =>
-          Number(item.patrol_id)
-        )
+        (membershipData || []).map((item) => Number(item.patrol_id))
       );
     } catch (error) {
       console.error("Błąd pobierania wydarzeń:", error);
@@ -487,9 +459,7 @@ export default function Home() {
       title: "",
       eventType: "zbiórka",
       audience: "whole",
-      patrolId: patrols[0]?.id
-        ? String(patrols[0].id)
-        : "",
+      patrolId: patrols[0]?.id ? String(patrols[0].id) : "",
       date: selectedDate,
       startTime: "17:30",
       endTime: "19:30",
@@ -523,13 +493,8 @@ export default function Home() {
       return;
     }
 
-    if (
-      eventForm.endTime &&
-      eventForm.endTime <= eventForm.startTime
-    ) {
-      alert(
-        "Godzina zakończenia musi być późniejsza niż rozpoczęcia."
-      );
+    if (eventForm.endTime && eventForm.endTime <= eventForm.startTime) {
+      alert("Godzina zakończenia musi być późniejsza niż rozpoczęcia.");
       return;
     }
 
@@ -538,18 +503,12 @@ export default function Home() {
       return;
     }
 
-    if (
-      eventForm.audience === "patrol" &&
-      !eventForm.patrolId
-    ) {
+    if (eventForm.audience === "patrol" && !eventForm.patrolId) {
       alert("Wybierz zastęp.");
       return;
     }
 
-    if (
-      eventForm.hasPayment &&
-      !eventForm.cost.trim()
-    ) {
+    if (eventForm.hasPayment && !eventForm.cost.trim()) {
       alert("Wpisz kwotę płatności.");
       return;
     }
@@ -558,22 +517,17 @@ export default function Home() {
     let createdEventId = null;
 
     try {
-      const reservesRoom =
-        MAIN_LOCATIONS.includes(finalLocation);
+      const reservesRoom = MAIN_LOCATIONS.includes(finalLocation);
 
       const starts = reservesRoom
         ? halfHourStarts(
             eventForm.startTime,
-            eventForm.endTime ||
-              addMinutes(eventForm.startTime, 30)
+            eventForm.endTime || addMinutes(eventForm.startTime, 30)
           )
         : [];
 
       if (reservesRoom) {
-        const {
-          data: existingSlots,
-          error: existingError,
-        } = await supabase
+        const { data: existingSlots, error: existingError } = await supabase
           .from("schedule_slots")
           .select("id,start_time,location")
           .eq("slot_date", eventForm.date)
@@ -582,58 +536,48 @@ export default function Home() {
         if (existingError) throw existingError;
 
         const occupiedTimes = new Set(
-          (existingSlots || []).map((slot) =>
-            normalizeTime(slot.start_time)
-          )
+          (existingSlots || []).map((slot) => normalizeTime(slot.start_time))
         );
 
-        const conflict = starts.find((time) =>
-          occupiedTimes.has(time)
-        );
+        const conflict = starts.find((time) => occupiedTimes.has(time));
 
         if (conflict) {
           alert(
             `${finalLocation} jest już zajęty ${eventForm.date} o ${conflict}. Wydarzenie nie zostało zapisane.`
           );
-
           return;
         }
       }
 
-      const { data: created, error: eventError } =
-        await supabase
-          .from("events")
-          .insert({
-            title: eventForm.title.trim(),
-            event_type: eventForm.eventType,
-            event_date: eventForm.date,
-            start_time: `${eventForm.startTime}:00`,
-            end_time: eventForm.endTime
-              ? `${eventForm.endTime}:00`
+      const { data: created, error: eventError } = await supabase
+        .from("events")
+        .insert({
+          title: eventForm.title.trim(),
+          event_type: eventForm.eventType,
+          event_date: eventForm.date,
+          start_time: `${eventForm.startTime}:00`,
+          end_time: eventForm.endTime
+            ? `${eventForm.endTime}:00`
+            : null,
+          location: finalLocation,
+          description: eventForm.description.trim() || null,
+          created_by: session.user.id,
+          whole_troop: eventForm.audience === "whole",
+          patrol_id:
+            eventForm.audience === "patrol"
+              ? Number(eventForm.patrolId)
               : null,
-            location: finalLocation,
-            description:
-              eventForm.description.trim() || null,
-            created_by: session.user.id,
-            whole_troop:
-              eventForm.audience === "whole",
-            patrol_id:
-              eventForm.audience === "patrol"
-                ? Number(eventForm.patrolId)
-                : null,
-            what_to_bring:
-              eventForm.bring.trim() || null,
-            cost: eventForm.hasPayment
-              ? eventForm.cost.trim()
+          what_to_bring: eventForm.bring.trim() || null,
+          cost: eventForm.hasPayment
+            ? eventForm.cost.trim()
+            : null,
+          payment_deadline:
+            eventForm.hasPayment && eventForm.paymentDeadline
+              ? eventForm.paymentDeadline
               : null,
-            payment_deadline:
-              eventForm.hasPayment &&
-              eventForm.paymentDeadline
-                ? eventForm.paymentDeadline
-                : null,
-          })
-          .select("id")
-          .single();
+        })
+        .select("id")
+        .single();
 
       if (eventError) throw eventError;
 
@@ -659,15 +603,9 @@ export default function Home() {
 
       setEventModalOpen(false);
 
-      await Promise.all([
-        loadEvents(),
-        loadSchedule(),
-      ]);
+      await Promise.all([loadEvents(), loadSchedule()]);
     } catch (error) {
-      console.error(
-        "Błąd zapisu wydarzenia:",
-        error
-      );
+      console.error("Błąd zapisu wydarzenia:", error);
 
       if (createdEventId) {
         await supabase
@@ -677,9 +615,7 @@ export default function Home() {
       }
 
       alert(
-        `Nie udało się zapisać wydarzenia.\n\n${
-          error?.message || ""
-        }`
+        `Nie udało się zapisać wydarzenia.\n\n${error?.message || ""}`
       );
     } finally {
       setEventSaving(false);
@@ -701,18 +637,13 @@ export default function Home() {
       .eq("id", eventItem.id);
 
     if (error) {
-      alert(
-        `Nie udało się usunąć wydarzenia.\n\n${error.message}`
-      );
+      alert(`Nie udało się usunąć wydarzenia.\n\n${error.message}`);
       return;
     }
 
     setEventDetails(null);
 
-    await Promise.all([
-      loadEvents(),
-      loadSchedule(),
-    ]);
+    await Promise.all([loadEvents(), loadSchedule()]);
   }
 
   async function login(event) {
@@ -721,11 +652,10 @@ export default function Home() {
     setLoggingIn(true);
     setLoginError("");
 
-    const { error } =
-      await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
 
     if (error) {
       setLoginError(
@@ -747,22 +677,17 @@ export default function Home() {
     setActiveTab("Grafik");
   }
 
-  function openReservation(
-    time = "17:30",
-    location = "Nora"
-  ) {
+  function openReservation(time = "17:30", location = "Nora") {
     setForm({
-      reserver: "whole",
-      location: MAIN_LOCATIONS.includes(location)
-        ? location
-        : "Inne",
-      customLocation: MAIN_LOCATIONS.includes(location)
-        ? ""
-        : location,
+      reserver:
+        role === "admin"
+          ? "whole"
+          : String(patrols[0]?.id || ""),
+      location: MAIN_LOCATIONS.includes(location) ? location : "Inne",
+      customLocation: MAIN_LOCATIONS.includes(location) ? "" : location,
       startTime: time,
       endTime: addMinutes(time, 30),
     });
-
     setModalOpen(true);
   }
 
@@ -776,9 +701,7 @@ export default function Home() {
 
   function changeDay(days) {
     const value = moveDate(selectedDate, days);
-    const date = new Date(
-      `${value}T12:00:00`
-    );
+    const date = new Date(`${value}T12:00:00`);
 
     setSelectedDate(value);
     setCalendarYear(date.getFullYear());
@@ -799,201 +722,158 @@ export default function Home() {
   async function saveReservation() {
     if (!session?.user) return;
 
-    const wholeTroop =
-      form.reserver === "whole";
+    const wholeTroop = form.reserver === "whole";
 
-    const patrol = wholeTroop
-      ? null
-      : patrols.find(
-          (item) =>
-            String(item.id) ===
-            String(form.reserver)
-        );
-
-    if (!wholeTroop && !patrol?.id) {
-      alert(
-        "Nie udało się znaleźć tego zastępu w bazie."
-      );
+    if (wholeTroop && role !== "admin") {
+      alert("Tylko administrator może rezerwować dla całej drużyny.");
       return;
     }
 
-    const finalLocation =
-      form.location === "Inne"
-        ? form.customLocation.trim()
-        : form.location;
+    const patrol = wholeTroop
+      ? null
+      : patrols.find((item) => String(item.id) === String(form.reserver));
 
+    if (!wholeTroop && !patrol?.id) {
+      alert("Wybierz zastęp.");
+      return;
+    }
+
+    const finalLocation = form.location === "Inne" ? form.customLocation.trim() : form.location;
     if (!finalLocation) {
       alert("Wpisz miejsce zbiórki.");
       return;
     }
-
-    if (
-      !form.startTime ||
-      !form.endTime ||
-      form.endTime <= form.startTime
-    ) {
-      alert(
-        "Godzina zakończenia musi być późniejsza niż rozpoczęcia."
-      );
+    if (!form.startTime || !form.endTime || form.endTime <= form.startTime) {
+      alert("Godzina zakończenia musi być późniejsza niż rozpoczęcia.");
       return;
     }
 
-    const starts = halfHourStarts(
-      form.startTime,
-      form.endTime
-    );
-
-    const valid = new Set(
-      availableTimesForDate(selectedDate)
-    );
-
-    if (
-      !starts.length ||
-      starts.some((time) => !valid.has(time))
-    ) {
-      alert(
-        "Wybrany przedział wykracza poza godziny dostępne w Grafiku."
-      );
+    const starts = halfHourStarts(form.startTime, form.endTime);
+    const valid = new Set(availableTimesForDate(selectedDate));
+    if (!starts.length || starts.some((time) => !valid.has(time))) {
+      alert("Wybrany przedział wykracza poza godziny dostępne w Grafiku.");
       return;
     }
 
     setSaving(true);
-
     const createdSlotIds = [];
     const createdReservationIds = [];
 
     try {
-      const {
-        data: existingSlots,
-        error: existingError,
-      } = await supabase
-        .from("schedule_slots")
-        .select("id,start_time,location")
-        .eq("slot_date", selectedDate)
-        .eq("location", finalLocation);
+      const [
+        { data: existingSlots, error: existingError },
+        { data: sameDayEvents, error: eventCheckError },
+      ] = await Promise.all([
+        supabase
+          .from("schedule_slots")
+          .select("id,start_time,end_time,event_id")
+          .eq("slot_date", selectedDate)
+          .eq("location", finalLocation),
+        supabase
+          .from("events")
+          .select("id,start_time,end_time")
+          .eq("event_date", selectedDate)
+          .eq("location", finalLocation),
+      ]);
 
       if (existingError) throw existingError;
+      if (eventCheckError) throw eventCheckError;
 
-      const occupied = new Set(
-        (existingSlots || []).map((slot) =>
-          normalizeTime(slot.start_time)
-        )
+      const slotIds = (existingSlots || []).map((slot) => slot.id);
+      let reservedSlotIds = new Set();
+
+      if (slotIds.length) {
+        const { data: existingReservations, error: reservationCheckError } = await supabase
+          .from("schedule_reservations")
+          .select("slot_id")
+          .in("slot_id", slotIds);
+
+        if (reservationCheckError) throw reservationCheckError;
+        reservedSlotIds = new Set((existingReservations || []).map((item) => Number(item.slot_id)));
+      }
+
+      const slotByTime = new Map(
+        (existingSlots || []).map((slot) => [normalizeTime(slot.start_time), slot])
       );
 
-      const conflict = starts.find((time) =>
-        occupied.has(time)
-      );
+      const conflictSlot = starts.find((time) => {
+        const slot = slotByTime.get(time);
+        return slot && (slot.event_id || reservedSlotIds.has(Number(slot.id)));
+      });
 
-      if (conflict) {
-        alert(
-          `${finalLocation} jest już zajęty o ${conflict}. Wybierz inny przedział.`
-        );
+      const conflictEvent = (sameDayEvents || []).find((eventItem) => {
+        const eventStart = normalizeTime(eventItem.start_time);
+        const eventEnd = normalizeTime(eventItem.end_time) || addMinutes(eventStart, 30);
+        return rangesOverlap(form.startTime, form.endTime, eventStart, eventEnd);
+      });
+
+      if (conflictSlot || conflictEvent) {
+        alert(`${finalLocation} jest już zajęty w tym przedziale.`);
         return;
       }
 
-      const groupId = crypto.randomUUID();
+      const missingStarts = starts.filter((time) => !slotByTime.has(time));
+      let newSlots = [];
 
-      const reservationName = wholeTroop
-        ? "Cała drużyna"
-        : patrol.name;
-
-      const {
-        data: newSlots,
-        error: slotError,
-      } = await supabase
-        .from("schedule_slots")
-        .insert(
-          starts.map((time) => ({
+      if (missingStarts.length) {
+        const { data, error: slotError } = await supabase
+          .from("schedule_slots")
+          .insert(missingStarts.map((time) => ({
             slot_date: selectedDate,
             start_time: `${time}:00`,
-            end_time: `${addMinutes(
-              time,
-              30
-            )}:00`,
+            end_time: `${addMinutes(time, 30)}:00`,
             location: finalLocation,
-            notes: reservationName,
+            notes: wholeTroop ? "Cała drużyna" : patrol.name,
             created_by: session.user.id,
-          }))
-        )
-        .select("id,start_time");
+          })))
+          .select("id,start_time");
 
-      if (slotError) throw slotError;
+        if (slotError) throw slotError;
+        newSlots = data || [];
+        createdSlotIds.push(...newSlots.map((slot) => slot.id));
+      }
 
-      createdSlotIds.push(
-        ...(newSlots || []).map(
-          (slot) => slot.id
-        )
-      );
+      const allSlots = starts.map((time) => {
+        const existing = slotByTime.get(time);
+        if (existing) return existing;
+        return newSlots.find((slot) => normalizeTime(slot.start_time) === time);
+      }).filter(Boolean);
 
-      const {
-        data: newReservations,
-        error: reservationError,
-      } = await supabase
+      const groupId = crypto.randomUUID();
+      const reservationName = wholeTroop ? "Cała drużyna" : patrol.name;
+
+      const { data: newReservations, error: reservationError } = await supabase
         .from("schedule_reservations")
-        .insert(
-          (newSlots || []).map((slot) => ({
-            slot_id: slot.id,
-            patrol_id: wholeTroop
-              ? null
-              : patrol.id,
-            reserved_by: session.user.id,
-            reservation_name:
-              reservationName,
-            reservation_group: groupId,
-          }))
-        )
+        .insert(allSlots.map((slot) => ({
+          slot_id: slot.id,
+          patrol_id: wholeTroop ? null : patrol.id,
+          reserved_by: session.user.id,
+          reservation_name: reservationName,
+          reservation_group: groupId,
+        })))
         .select("id");
 
-      if (reservationError)
-        throw reservationError;
-
-      createdReservationIds.push(
-        ...(newReservations || []).map(
-          (item) => item.id
-        )
-      );
+      if (reservationError) throw reservationError;
+      createdReservationIds.push(...(newReservations || []).map((item) => item.id));
 
       setModalOpen(false);
-
       await loadSchedule();
     } catch (error) {
       console.error("Błąd zapisu:", error);
-
       if (createdReservationIds.length) {
-        await supabase
-          .from("schedule_reservations")
-          .delete()
-          .in(
-            "id",
-            createdReservationIds
-          );
+        await supabase.from("schedule_reservations").delete().in("id", createdReservationIds);
       }
-
       if (createdSlotIds.length) {
-        await supabase
-          .from("schedule_slots")
-          .delete()
-          .in("id", createdSlotIds);
+        await supabase.from("schedule_slots").delete().in("id", createdSlotIds);
       }
-
-      alert(
-        `Nie udało się zapisać rezerwacji.\n\n${
-          error?.message || ""
-        }`
-      );
+      alert(`Nie udało się zapisać rezerwacji.\n\n${error?.message || ""}`);
     } finally {
       setSaving(false);
     }
   }
 
-  async function removeReservation(
-    reservation
-  ) {
-    if (
-      !reservation?.id ||
-      reservation.isEvent
-    )
-      return;
+  async function removeReservation(reservation) {
+    if (!reservation?.id || reservation.isEvent) return;
 
     const confirmed = window.confirm(
       `Anulować rezerwację ${reservation.patrol} — ${reservation.time}–${reservation.endTime}, ${reservation.location}?`
@@ -1005,29 +885,33 @@ export default function Home() {
       const { error } = await supabase
         .from("schedule_reservations")
         .delete()
-        .in(
-          "id",
-          reservation.reservationIds || [
-            reservation.id,
-          ]
-        );
+        .in("id", reservation.reservationIds || [reservation.id]);
 
       if (error) throw error;
+
+      if (reservation.slotIds?.length) {
+        const { error: slotDeleteError } = await supabase
+          .from("schedule_slots")
+          .delete()
+          .in("id", reservation.slotIds);
+
+        if (slotDeleteError) {
+          console.warn("Rezerwacja usunięta, ale zostały puste sloty:", slotDeleteError);
+        }
+      }
 
       setDetailsOpen(null);
       await loadSchedule();
     } catch (error) {
-      console.error(
-        "Błąd usuwania:",
-        error
-      );
+      console.error("Błąd usuwania:", error);
 
       alert(
         "Nie udało się anulować rezerwacji. Możesz usuwać własne rezerwacje, a administrator może usuwać wszystkie."
       );
     }
   }
-    if (loading) {
+
+  if (loading) {
     return (
       <div style={centerScreen}>
         <strong>Ładowanie Centrum Dowodzenia...</strong>
@@ -1148,7 +1032,9 @@ export default function Home() {
               }}
             >
               <div>
-                <div style={eyebrowStyle}>Grafik harcówki</div>
+                <div style={eyebrowStyle}>
+                  Grafik harcówki
+                </div>
 
                 <h2
                   style={{
@@ -1193,7 +1079,9 @@ export default function Home() {
                   const value = event.target.value;
                   if (!value) return;
 
-                  const date = new Date(`${value}T12:00:00`);
+                  const date = new Date(
+                    `${value}T12:00:00`
+                  );
 
                   setSelectedDate(value);
                   setCalendarYear(date.getFullYear());
@@ -1225,36 +1113,43 @@ export default function Home() {
                 marginBottom: 18,
               }}
             >
-              {["Wszystkie", "Nora", "Basecamp", "Inne"].map(
-                (location) => (
-                  <button
-                    key={location}
-                    onClick={() => setLocationFilter(location)}
-                    style={{
-                      border:
-                        locationFilter === location
-                          ? "1px solid #173b2b"
-                          : "1px solid #d5d9d5",
-                      background:
-                        locationFilter === location
-                          ? "#173b2b"
-                          : "white",
-                      color:
-                        locationFilter === location
-                          ? "white"
-                          : "#273b31",
-                      borderRadius: 30,
-                      padding: "9px 16px",
-                      whiteSpace: "nowrap",
-                      cursor: "pointer",
-                      fontWeight:
-                        locationFilter === location ? 700 : 500,
-                    }}
-                  >
-                    {location}
-                  </button>
-                )
-              )}
+              {[
+                "Wszystkie",
+                "Nora",
+                "Basecamp",
+                "Inne",
+              ].map((location) => (
+                <button
+                  key={location}
+                  onClick={() =>
+                    setLocationFilter(location)
+                  }
+                  style={{
+                    border:
+                      locationFilter === location
+                        ? "1px solid #173b2b"
+                        : "1px solid #d5d9d5",
+                    background:
+                      locationFilter === location
+                        ? "#173b2b"
+                        : "white",
+                    color:
+                      locationFilter === location
+                        ? "white"
+                        : "#273b31",
+                    borderRadius: 30,
+                    padding: "9px 16px",
+                    whiteSpace: "nowrap",
+                    cursor: "pointer",
+                    fontWeight:
+                      locationFilter === location
+                        ? 700
+                        : 500,
+                  }}
+                >
+                  {location}
+                </button>
+              ))}
             </div>
 
             {scheduleLoading && (
@@ -1270,18 +1165,19 @@ export default function Home() {
               </div>
             )}
 
-            {!scheduleLoading && dayReservations.length === 0 && (
-              <div
-                style={{
-                  ...cardStyle,
-                  textAlign: "center",
-                  color: "#68736d",
-                  marginBottom: 12,
-                }}
-              >
-                Brak rezerwacji na ten dzień.
-              </div>
-            )}
+            {!scheduleLoading &&
+              dayReservations.length === 0 && (
+                <div
+                  style={{
+                    ...cardStyle,
+                    textAlign: "center",
+                    color: "#68736d",
+                    marginBottom: 12,
+                  }}
+                >
+                  Brak rezerwacji na ten dzień.
+                </div>
+              )}
 
             <div style={{ display: "grid", gap: 10 }}>
               {dayReservations.map((reservation) => (
@@ -1306,8 +1202,6 @@ export default function Home() {
                     border: 0,
                     borderLeft: reservation.isEvent
                       ? "5px solid #607b54"
-                      : reservation.patrol === "Cała drużyna"
-                      ? "5px solid #b98a2f"
                       : "5px solid #8b2635",
                     textAlign: "left",
                     display: "grid",
@@ -1345,7 +1239,7 @@ export default function Home() {
                       {reservation.isEvent
                         ? "wydarzenie"
                         : reservation.leader ||
-                          "rezerwacja harcówki"}
+                          "lider zastępu"}
                     </div>
                   </div>
 
@@ -1363,7 +1257,6 @@ export default function Home() {
                 </button>
               ))}
             </div>
-
             <h3 style={{ margin: "26px 0 10px" }}>
               Wolne terminy
             </h3>
@@ -1378,19 +1271,11 @@ export default function Home() {
 
                   return locations.map((location) => {
                     const occupied = reservations.some(
-                      (item) => {
-                        if (
-                          item.date !== selectedDate ||
-                          item.location !== location
-                        ) {
-                          return false;
-                        }
-
-                        return (
-                          time >= item.time &&
-                          time < item.endTime
-                        );
-                      }
+                      (item) =>
+                        item.date === selectedDate &&
+                        item.location === location &&
+                        time >= item.time &&
+                        time < item.endTime
                     );
 
                     if (occupied) return null;
@@ -1473,7 +1358,10 @@ export default function Home() {
               }}
             >
               <div>
-                <div style={eyebrowStyle}>Twoje centrum</div>
+                <div style={eyebrowStyle}>
+                  Twoje centrum
+                </div>
+
                 <h2 style={{ margin: "4px 0 0" }}>
                   Co mnie czeka?
                 </h2>
@@ -1544,7 +1432,10 @@ export default function Home() {
                         <br />
                         🕐 {reservation.time}–
                         {reservation.endTime ||
-                          addMinutes(reservation.time, 30)}
+                          addMinutes(
+                            reservation.time,
+                            30
+                          )}
                         <br />
                         📍 {reservation.location}
                       </div>
@@ -1563,7 +1454,9 @@ export default function Home() {
                 return (
                   <button
                     key={`event-${eventItem.id}`}
-                    onClick={() => setEventDetails(eventItem)}
+                    onClick={() =>
+                      setEventDetails(eventItem)
+                    }
                     style={{
                       ...cardStyle,
                       border: 0,
@@ -1600,10 +1493,14 @@ export default function Home() {
                         color: "#526159",
                       }}
                     >
-                      📅 {formatDate(eventItem.event_date)}
+                      📅 {formatDate(
+                        eventItem.event_date
+                      )}
                       <br />
 
-                      🕐 {normalizeTime(eventItem.start_time)}
+                      🕐 {normalizeTime(
+                        eventItem.start_time
+                      )}
                       {eventItem.end_time
                         ? `–${normalizeTime(
                             eventItem.end_time
@@ -1700,310 +1597,6 @@ export default function Home() {
         activeTab={activeTab}
         setActiveTab={setActiveTab}
       />
-                {modalOpen && (
-        <ModalBackground
-          close={() => !saving && setModalOpen(false)}
-        >
-          <div style={eyebrowStyle}>Grafik harcówki</div>
-
-          <h2 style={{ marginTop: 5 }}>Nowa rezerwacja</h2>
-
-          <p
-            style={{
-              color: "#69746d",
-              marginTop: -5,
-              lineHeight: 1.5,
-            }}
-          >
-            Rezerwujesz wybrane miejsce dla całej drużyny
-            albo konkretnego zastępu.
-          </p>
-
-          <div style={{ display: "grid", gap: 15 }}>
-            <label>
-              <strong>Kto rezerwuje?</strong>
-
-              <select
-                value={form.reserver}
-                onChange={(event) =>
-                  setForm({
-                    ...form,
-                    reserver: event.target.value,
-                  })
-                }
-                style={inputStyle}
-              >
-                <option value="whole">Cała drużyna</option>
-
-                {patrols.map((patrol) => (
-                  <option
-                    key={patrol.id}
-                    value={String(patrol.id)}
-                  >
-                    {patrol.name}
-                    {patrol.leader_name
-                      ? ` — ${patrol.leader_name}`
-                      : ""}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label>
-              <strong>Miejsce</strong>
-
-              <select
-                value={form.location}
-                onChange={(event) =>
-                  setForm({
-                    ...form,
-                    location: event.target.value,
-                    customLocation:
-                      event.target.value === "Inne"
-                        ? form.customLocation
-                        : "",
-                  })
-                }
-                style={inputStyle}
-              >
-                <option value="Nora">Nora</option>
-                <option value="Basecamp">Basecamp</option>
-                <option value="Inne">
-                  Inne miejsce...
-                </option>
-              </select>
-            </label>
-
-            {form.location === "Inne" && (
-              <label>
-                <strong>Wpisz miejsce</strong>
-
-                <input
-                  type="text"
-                  value={form.customLocation}
-                  onChange={(event) =>
-                    setForm({
-                      ...form,
-                      customLocation: event.target.value,
-                    })
-                  }
-                  placeholder="np. Olszynki, Orlik, Stróżki..."
-                  style={inputStyle}
-                />
-              </label>
-            )}
-
-            <div
-              style={{
-                ...cardStyle,
-                boxShadow: "none",
-                background: "#f5f7f4",
-                border: "1px solid #e1e5e1",
-              }}
-            >
-              <div style={eyebrowStyle}>TERMIN</div>
-
-              <strong
-                style={{
-                  display: "block",
-                  marginTop: 5,
-                  textTransform: "capitalize",
-                }}
-              >
-                {formatDate(selectedDate)}
-              </strong>
-            </div>
-
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr",
-                gap: 10,
-              }}
-            >
-              <label>
-                <strong>Od</strong>
-
-                <select
-                  value={form.startTime}
-                  onChange={(event) => {
-                    const start = event.target.value;
-
-                    setForm({
-                      ...form,
-                      startTime: start,
-                      endTime:
-                        form.endTime <= start
-                          ? addMinutes(start, 30)
-                          : form.endTime,
-                    });
-                  }}
-                  style={inputStyle}
-                >
-                  {validTimes.map((time) => (
-                    <option key={time} value={time}>
-                      {time}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label>
-                <strong>Do</strong>
-
-                <select
-                  value={form.endTime}
-                  onChange={(event) =>
-                    setForm({
-                      ...form,
-                      endTime: event.target.value,
-                    })
-                  }
-                  style={inputStyle}
-                >
-                  {validTimes
-                    .map((time) => addMinutes(time, 30))
-                    .filter(
-                      (time, index, array) =>
-                        array.indexOf(time) === index &&
-                        time > form.startTime
-                    )
-                    .map((time) => (
-                      <option key={time} value={time}>
-                        {time}
-                      </option>
-                    ))}
-                </select>
-              </label>
-            </div>
-
-            <div
-              style={{
-                background: "#fff9e9",
-                border: "1px solid #ead8a7",
-                borderRadius: 14,
-                padding: 13,
-                color: "#6f5722",
-                lineHeight: 1.5,
-                fontSize: 14,
-              }}
-            >
-              <strong>
-                {form.startTime}–{form.endTime}
-              </strong>
-              <br />
-              Aplikacja zarezerwuje automatycznie wszystkie
-              półgodzinne sloty w tym przedziale.
-            </div>
-
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr",
-                gap: 9,
-              }}
-            >
-              <button
-                style={secondaryStyle}
-                disabled={saving}
-                onClick={() => setModalOpen(false)}
-              >
-                Anuluj
-              </button>
-
-              <button
-                style={{
-                  ...primaryStyle,
-                  opacity: saving ? 0.6 : 1,
-                }}
-                disabled={saving}
-                onClick={saveReservation}
-              >
-                {saving ? "Zapisuję..." : "Zarezerwuj"}
-              </button>
-            </div>
-          </div>
-        </ModalBackground>
-      )}
-
-      {detailsOpen && (
-        <ModalBackground
-          close={() => setDetailsOpen(null)}
-        >
-          <div style={eyebrowStyle}>REZERWACJA</div>
-
-          <h2 style={{ marginBottom: 8 }}>
-            {detailsOpen.patrol}
-          </h2>
-
-          <div
-            style={{
-              lineHeight: 1.8,
-              color: "#526159",
-            }}
-          >
-            📅 {formatDate(detailsOpen.date)}
-            <br />
-            🕐 {detailsOpen.time}–
-            {detailsOpen.endTime ||
-              addMinutes(detailsOpen.time, 30)}
-            <br />
-            📍 {detailsOpen.location}
-          </div>
-
-          {detailsOpen.leader && (
-            <div
-              style={{
-                ...cardStyle,
-                boxShadow: "none",
-                background: "#edf1ed",
-                marginTop: 15,
-              }}
-            >
-              <strong>Odpowiedzialny</strong>
-
-              <div
-                style={{
-                  marginTop: 5,
-                  color: "#526159",
-                }}
-              >
-                {detailsOpen.leader}
-              </div>
-            </div>
-          )}
-
-          {(detailsOpen.reservedBy === session.user.id ||
-            role === "admin") && (
-            <button
-              onClick={() =>
-                removeReservation(detailsOpen)
-              }
-              style={{
-                ...secondaryStyle,
-                width: "100%",
-                marginTop: 15,
-                borderColor: "#d9b8bd",
-                color: "#8b2635",
-                fontWeight: 800,
-              }}
-            >
-              Anuluj rezerwację
-            </button>
-          )}
-
-          <button
-            style={{
-              ...primaryStyle,
-              width: "100%",
-              marginTop: 10,
-            }}
-            onClick={() => setDetailsOpen(null)}
-          >
-            Zamknij
-          </button>
-        </ModalBackground>
-      )}
 
       {eventModalOpen && (
         <ModalBackground
@@ -2061,16 +1654,37 @@ export default function Home() {
                 }
                 style={inputStyle}
               >
-                <option value="zbiórka">Zbiórka</option>
+                <option value="zbiórka">
+                  Zbiórka
+                </option>
+
                 <option value="wydarzenie">
                   Wydarzenie
                 </option>
-                <option value="służba">Służba</option>
-                <option value="wyjazd">Wyjazd</option>
-                <option value="biwak">Biwak</option>
-                <option value="rajd">Rajd</option>
-                <option value="zawody">Zawody</option>
-                <option value="inne">Inne</option>
+
+                <option value="służba">
+                  Służba
+                </option>
+
+                <option value="wyjazd">
+                  Wyjazd
+                </option>
+
+                <option value="biwak">
+                  Biwak
+                </option>
+
+                <option value="rajd">
+                  Rajd
+                </option>
+
+                <option value="zawody">
+                  Zawody
+                </option>
+
+                <option value="inne">
+                  Inne
+                </option>
               </select>
             </label>
 
@@ -2090,6 +1704,7 @@ export default function Home() {
                 <option value="whole">
                   Cała drużyna
                 </option>
+
                 <option value="patrol">
                   Konkretny zastęp
                 </option>
@@ -2199,9 +1814,11 @@ export default function Home() {
                 style={inputStyle}
               >
                 <option value="Nora">Nora</option>
+
                 <option value="Basecamp">
                   Basecamp
                 </option>
+
                 <option value="Inne">
                   Inne miejsce...
                 </option>
@@ -2501,63 +2118,263 @@ export default function Home() {
                 marginTop: 12,
               }}
             >
-              <strong>💰 Płatność</strong>
+              <div style={eyebrowStyle}>
+                PŁATNOŚĆ
+              </div>
 
-              <p
+              <h3
                 style={{
-                  marginBottom: 0,
-                  lineHeight: 1.6,
+                  margin: "6px 0",
+                  fontSize: 21,
                 }}
               >
                 {eventDetails.cost}
+              </h3>
 
-                {eventDetails.payment_deadline && (
-                  <>
-                    <br />
-                    Termin:{" "}
-                    {formatDate(
-                      eventDetails.payment_deadline
-                    )}
-                  </>
-                )}
-              </p>
+              {eventDetails.payment_deadline && (
+                <div style={{ color: "#6d6041" }}>
+                  Termin:{" "}
+                  {formatDate(
+                    eventDetails.payment_deadline
+                  )}
+                </div>
+              )}
+
+              {role === "admin" && (
+                <div
+                  style={{
+                    marginTop: 12,
+                    fontSize: 13,
+                    color: "#756b53",
+                  }}
+                >
+                  Statusy „zapłacone / nie
+                  zapłacone” pojawią się tutaj po
+                  dodaniu członków drużyny do
+                  aplikacji.
+                </div>
+              )}
             </div>
           )}
 
-          {role === "admin" && (
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns:
+                role === "admin" ? "1fr 1fr" : "1fr",
+              gap: 9,
+              marginTop: 18,
+            }}
+          >
             <button
-              onClick={() =>
-                deleteEvent(eventDetails)
-              }
+              style={secondaryStyle}
+              onClick={() => setEventDetails(null)}
+            >
+              Zamknij
+            </button>
+
+            {role === "admin" && (
+              <button
+                style={primaryStyle}
+                onClick={() =>
+                  deleteEvent(eventDetails)
+                }
+              >
+                Usuń wydarzenie
+              </button>
+            )}
+          </div>
+        </ModalBackground>
+      )}
+
+      {modalOpen && (
+        <ModalBackground
+          close={() =>
+            !saving && setModalOpen(false)
+          }
+        >
+          <h2 style={{ marginTop: 0 }}>
+            Nowa rezerwacja
+          </h2>
+
+          <p
+            style={{
+              color: "#69746d",
+              marginTop: -8,
+            }}
+          >
+            {formatDate(selectedDate)}
+          </p>
+
+          <div style={{ display: "grid", gap: 15 }}>
+            <label>
+              <strong>Kto rezerwuje?</strong>
+              <select
+                value={form.reserver}
+                onChange={(event) => setForm({ ...form, reserver: event.target.value })}
+                style={inputStyle}
+              >
+                {role === "admin" && (
+                  <option value="whole">Cała drużyna</option>
+                )}
+                {patrols.map((patrol) => (
+                  <option key={patrol.id} value={String(patrol.id)}>
+                    {patrol.name} — {patrol.leader_name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              <strong>Miejsce</strong>
+              <select
+                value={form.location}
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+                    location: event.target.value,
+                    customLocation: event.target.value === "Inne" ? form.customLocation : "",
+                  })
+                }
+                style={inputStyle}
+              >
+                <option value="Nora">Nora</option>
+                <option value="Basecamp">Basecamp</option>
+                <option value="Inne">Inne miejsce...</option>
+              </select>
+            </label>
+
+            {form.location === "Inne" && (
+              <label>
+                <strong>Wpisz miejsce</strong>
+                <input
+                  type="text"
+                  value={form.customLocation}
+                  onChange={(event) => setForm({ ...form, customLocation: event.target.value })}
+                  placeholder="np. Orlik, Olszynki, szkoła..."
+                  style={inputStyle}
+                />
+              </label>
+            )}
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <label>
+                <strong>Od</strong>
+                <select
+                  value={form.startTime}
+                  onChange={(event) => {
+                    const startTime = event.target.value;
+                    const endTime = form.endTime > startTime ? form.endTime : addMinutes(startTime, 30);
+                    setForm({ ...form, startTime, endTime });
+                  }}
+                  style={inputStyle}
+                >
+                  {validTimes.map((time) => <option key={time} value={time}>{time}</option>)}
+                </select>
+              </label>
+
+              <label>
+                <strong>Do</strong>
+                <select
+                  value={form.endTime}
+                  onChange={(event) => setForm({ ...form, endTime: event.target.value })}
+                  style={inputStyle}
+                >
+                  {validTimes
+                    .map((time) => addMinutes(time, 30))
+                    .filter((time, index, array) => array.indexOf(time) === index && time > form.startTime)
+                    .map((time) => <option key={time} value={time}>{time}</option>)}
+                </select>
+              </label>
+            </div>
+
+            <div
               style={{
-                ...secondaryStyle,
-                width: "100%",
-                marginTop: 15,
-                borderColor: "#d9b8bd",
-                color: "#8b2635",
-                fontWeight: 800,
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 9,
               }}
             >
-              Usuń wydarzenie
-            </button>
-          )}
+              <button
+                style={secondaryStyle}
+                disabled={saving}
+                onClick={() =>
+                  setModalOpen(false)
+                }
+              >
+                Anuluj
+              </button>
 
-          <button
+              <button
+                style={{
+                  ...primaryStyle,
+                  opacity: saving ? 0.6 : 1,
+                }}
+                disabled={saving}
+                onClick={saveReservation}
+              >
+                {saving
+                  ? "Zapisuję..."
+                  : "Zapisz rezerwację"}
+              </button>
+            </div>
+          </div>
+        </ModalBackground>
+      )}
+
+      {detailsOpen && (
+        <ModalBackground
+          close={() => setDetailsOpen(null)}
+        >
+          <div style={eyebrowStyle}>Rezerwacja</div>
+
+          <h2>{detailsOpen.patrol}</h2>
+
+          <p style={{ lineHeight: 1.7 }}>
+            <strong>
+              {detailsOpen.time}–
+              {detailsOpen.endTime ||
+                addMinutes(detailsOpen.time, 30)}
+            </strong>
+            <br />
+            📍 {detailsOpen.location}
+            <br />
+            👤{" "}
+            {detailsOpen.leader ||
+              "lider zastępu"}
+          </p>
+
+          <div
             style={{
-              ...primaryStyle,
-              width: "100%",
-              marginTop: 10,
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: 9,
             }}
-            onClick={() => setEventDetails(null)}
           >
-            Zamknij
-          </button>
+            <button
+              style={secondaryStyle}
+              onClick={() =>
+                setDetailsOpen(null)
+              }
+            >
+              Zamknij
+            </button>
+
+            <button
+              style={primaryStyle}
+              onClick={() =>
+                removeReservation(detailsOpen)
+              }
+            >
+              Anuluj rezerwację
+            </button>
+          </div>
         </ModalBackground>
       )}
     </main>
   );
 }
-                  function LoginScreen({
+function LoginScreen({
   email,
   setEmail,
   password,
@@ -2567,66 +2384,66 @@ export default function Home() {
   loggingIn,
 }) {
   return (
-    <main style={loginPageStyle}>
-      <div style={loginCardStyle}>
+    <main
+      style={{
+        minHeight: "100vh",
+        background: "linear-gradient(160deg, #102a20, #214c38)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 20,
+        fontFamily: "Inter, Arial, Helvetica, sans-serif",
+      }}
+    >
+      <div
+        style={{
+          width: "100%",
+          maxWidth: 420,
+          background: "#f5f3eb",
+          borderRadius: 26,
+          padding: "32px 25px",
+          boxShadow: "0 20px 60px rgba(0,0,0,.25)",
+        }}
+      >
         <div
           style={{
-            width: 54,
-            height: 54,
-            borderRadius: 18,
-            background: "#173b2b",
-            color: "white",
-            display: "grid",
-            placeItems: "center",
+            color: "#8b2635",
             fontWeight: 900,
-            fontSize: 18,
-            marginBottom: 18,
+            letterSpacing: 2,
+            fontSize: 12,
           }}
         >
-          5
+          5 WDH • CZERWONE BERETY
         </div>
 
-        <div style={eyebrowStyle}>
-          5 WDH „Czerwone Berety”
-        </div>
-
-        <h1
-          style={{
-            margin: "5px 0 8px",
-            color: "#173b2b",
-            fontSize: 30,
-          }}
-        >
+        <h1 style={{ color: "#17231c", marginBottom: 5 }}>
           Centrum Dowodzenia
         </h1>
 
         <p
           style={{
-            color: "#69746d",
-            lineHeight: 1.6,
+            color: "#68736d",
             marginTop: 0,
-            marginBottom: 24,
+            marginBottom: 25,
           }}
         >
-          Grafik, wydarzenia i organizacja drużyny w jednym
-          miejscu.
+          Zaloguj się do swojej części drużyny.
         </p>
 
         <form
           onSubmit={login}
-          style={{ display: "grid", gap: 14 }}
+          style={{ display: "grid", gap: 15 }}
         >
           <label>
             <strong>E-mail</strong>
 
             <input
               type="email"
+              required
               value={email}
               onChange={(event) =>
                 setEmail(event.target.value)
               }
-              autoComplete="email"
-              required
               style={inputStyle}
             />
           </label>
@@ -2636,12 +2453,11 @@ export default function Home() {
 
             <input
               type="password"
+              required
               value={password}
               onChange={(event) =>
                 setPassword(event.target.value)
               }
-              autoComplete="current-password"
-              required
               style={inputStyle}
             />
           </label>
@@ -2649,11 +2465,10 @@ export default function Home() {
           {error && (
             <div
               style={{
-                background: "#fff1f2",
-                border: "1px solid #efc5ca",
-                color: "#8b2635",
-                padding: 12,
+                background: "#f8e5e7",
+                color: "#812638",
                 borderRadius: 12,
+                padding: 12,
                 fontSize: 14,
               }}
             >
@@ -2666,9 +2481,8 @@ export default function Home() {
             disabled={loggingIn}
             style={{
               ...primaryStyle,
-              padding: "14px 16px",
+              padding: 14,
               fontSize: 15,
-              marginTop: 4,
               opacity: loggingIn ? 0.6 : 1,
             }}
           >
@@ -2680,58 +2494,85 @@ export default function Home() {
   );
 }
 
-function AppHeader({ subtitle, logout }) {
+function ParentApp({ logout }) {
+  const [tab, setTab] = useState("Moje");
+
   return (
-    <header style={headerStyle}>
-      <div>
-        <div
-          style={{
-            color: "#c8a85a",
-            fontSize: 11,
-            letterSpacing: 1.7,
-            fontWeight: 900,
-          }}
-        >
-          5 WDH • CZERWONE BERETY
-        </div>
+    <main style={appStyle}>
+      <AppHeader
+        subtitle="Strefa rodzica"
+        logout={logout}
+      />
 
-        <div
-          style={{
-            color: "white",
-            fontSize: 21,
-            fontWeight: 900,
-            marginTop: 3,
-          }}
-        >
-          Centrum Dowodzenia
-        </div>
+      <section style={containerPadding}>
+        {tab === "Moje" && (
+          <>
+            <div style={eyebrowStyle}>
+              Najważniejsze informacje
+            </div>
 
-        <div
-          style={{
-            color: "#b9c8c0",
-            fontSize: 12,
-            marginTop: 3,
-          }}
-        >
-          {subtitle}
-        </div>
-      </div>
+            <h2 style={{ marginTop: 5 }}>
+              Co, kiedy i gdzie?
+            </h2>
 
-      <button
-        onClick={logout}
-        style={{
-          border: "1px solid rgba(255,255,255,.22)",
-          background: "rgba(255,255,255,.08)",
-          color: "white",
-          borderRadius: 12,
-          padding: "9px 11px",
-          cursor: "pointer",
-          fontWeight: 700,
-        }}
-      >
-        Wyloguj
-      </button>
-    </header>
+            <div style={{ display: "grid", gap: 12 }}>
+              {PARENT_EVENTS.map((event) => (
+                <div
+                  key={event.id}
+                  style={{
+                    ...cardStyle,
+                    borderLeft: "5px solid #8b2635",
+                  }}
+                >
+                  <div style={eyebrowStyle}>
+                    {event.type}
+                  </div>
+
+                  <h3>{event.title}</h3>
+
+                  <div style={{ lineHeight: 1.7 }}>
+                    📅 {formatDate(event.date)}
+                    <br />
+                    🕐 {event.time}
+                    <br />
+                    📍 {event.location}
+                    <br />
+                    🎒 {event.bring}
+
+                    {event.cost && (
+                      <>
+                        <br />
+                        💰 {event.cost}
+                      </>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {tab === "Kalendarz" && (
+          <SimplePage
+            title="Kalendarz"
+            text="Tutaj będą wydarzenia przypisane do dziecka i jego zastępu."
+          />
+        )}
+
+        {tab === "Dokumenty" && (
+          <SimplePage
+            title="Dokumenty"
+            text="Tutaj będą zgody, regulaminy i informacje organizacyjne."
+          />
+        )}
+      </section>
+
+      <BottomNav
+        tabs={["Moje", "Kalendarz", "Dokumenty"]}
+        activeTab={tab}
+        setActiveTab={setTab}
+      />
+    </main>
   );
 }
 
@@ -2747,21 +2588,20 @@ function MonthlyCalendar({
     <div
       style={{
         ...cardStyle,
-        marginBottom: 20,
-        padding: 15,
+        marginBottom: 22,
+        padding: 18,
       }}
     >
       <div
         style={{
           display: "flex",
-          alignItems: "center",
           justifyContent: "space-between",
-          gap: 10,
-          marginBottom: 15,
+          alignItems: "center",
+          marginBottom: 18,
         }}
       >
         <button
-          style={calendarArrowStyle}
+          style={secondaryStyle}
           onClick={() => changeMonth(-1)}
         >
           ←
@@ -2770,15 +2610,14 @@ function MonthlyCalendar({
         <strong
           style={{
             textTransform: "capitalize",
-            color: "#173b2b",
-            fontSize: 16,
+            fontSize: 18,
           }}
         >
           {monthName}
         </strong>
 
         <button
-          style={calendarArrowStyle}
+          style={secondaryStyle}
           onClick={() => changeMonth(1)}
         >
           →
@@ -2788,42 +2627,38 @@ function MonthlyCalendar({
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(7, 1fr)",
-          gap: 5,
-          marginBottom: 5,
+          gridTemplateColumns: "repeat(7,1fr)",
+          textAlign: "center",
         }}
       >
-        {["Pn", "Wt", "Śr", "Cz", "Pt", "Sb", "Nd"].map(
-          (day) => (
-            <div
-              key={day}
-              style={{
-                textAlign: "center",
-                color: "#7b857f",
-                fontSize: 11,
-                fontWeight: 800,
-                padding: "3px 0",
-              }}
-            >
-              {day}
-            </div>
-          )
-        )}
-      </div>
+        {[
+          "Pon",
+          "Wt",
+          "Śr",
+          "Czw",
+          "Pt",
+          "Sob",
+          "Nd",
+        ].map((day) => (
+          <div
+            key={day}
+            style={{
+              fontSize: 11,
+              fontWeight: 800,
+              color: "#78827c",
+              padding: 5,
+            }}
+          >
+            {day}
+          </div>
+        ))}
 
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(7, 1fr)",
-          gap: 5,
-        }}
-      >
         {calendarDays.map((date, index) => {
           if (!date) {
             return (
               <div
                 key={`empty-${index}`}
-                style={{ minHeight: 49 }}
+                style={{ minHeight: 55 }}
               />
             );
           }
@@ -2831,19 +2666,19 @@ function MonthlyCalendar({
           const value = dateToString(date);
           const selected = value === selectedDate;
 
-          const dayReservations = reservations.filter(
+          const items = reservations.filter(
             (item) => item.date === value
           );
 
-          const hasNora = dayReservations.some(
+          const nora = items.some(
             (item) => item.location === "Nora"
           );
 
-          const hasBasecamp = dayReservations.some(
+          const basecamp = items.some(
             (item) => item.location === "Basecamp"
           );
 
-          const hasOther = dayReservations.some(
+          const other = items.some(
             (item) =>
               !MAIN_LOCATIONS.includes(item.location)
           );
@@ -2853,67 +2688,57 @@ function MonthlyCalendar({
               key={value}
               onClick={() => selectCalendarDay(date)}
               style={{
-                minHeight: 49,
-                border: selected
-                  ? "2px solid #173b2b"
-                  : "1px solid #e2e5e2",
+                border: 0,
                 background: selected
-                  ? "#edf2ee"
-                  : "white",
-                borderRadius: 12,
+                  ? "#173b2b"
+                  : "transparent",
+                color: selected
+                  ? "white"
+                  : "#17231c",
+                borderRadius: 14,
+                minHeight: 55,
                 cursor: "pointer",
-                color: "#263a30",
-                padding: "6px 3px",
+                fontWeight: selected ? 900 : 600,
               }}
             >
-              <div
-                style={{
-                  fontWeight: selected ? 900 : 700,
-                  fontSize: 13,
-                }}
-              >
-                {date.getDate()}
-              </div>
+              {date.getDate()}
 
               <div
                 style={{
+                  height: 7,
                   display: "flex",
-                  justifyContent: "center",
                   gap: 3,
-                  marginTop: 5,
-                  minHeight: 6,
+                  justifyContent: "center",
+                  marginTop: 4,
                 }}
               >
-                {hasNora && (
-                  <span
-                    style={{
-                      width: 5,
-                      height: 5,
-                      borderRadius: 10,
-                      background: "#8b2635",
-                    }}
+                {nora && (
+                  <Dot
+                    color={
+                      selected
+                        ? "#f1a5ae"
+                        : "#9d293b"
+                    }
                   />
                 )}
 
-                {hasBasecamp && (
-                  <span
-                    style={{
-                      width: 5,
-                      height: 5,
-                      borderRadius: 10,
-                      background: "#607b54",
-                    }}
+                {basecamp && (
+                  <Dot
+                    color={
+                      selected
+                        ? "#bcd3b2"
+                        : "#607b54"
+                    }
                   />
                 )}
 
-                {hasOther && (
-                  <span
-                    style={{
-                      width: 5,
-                      height: 5,
-                      borderRadius: 10,
-                      background: "#b98a2f",
-                    }}
+                {other && (
+                  <Dot
+                    color={
+                      selected
+                        ? "#f3d899"
+                        : "#b98a2f"
+                    }
                   />
                 )}
               </div>
@@ -2924,44 +2749,91 @@ function MonthlyCalendar({
 
       <div
         style={{
+          borderTop: "1px solid #edf0ed",
+          marginTop: 15,
+          paddingTop: 12,
           display: "flex",
-          flexWrap: "wrap",
-          gap: 12,
-          marginTop: 13,
+          gap: 17,
           fontSize: 11,
-          color: "#69746d",
+          color: "#68736d",
+          flexWrap: "wrap",
         }}
       >
-        <CalendarLegend color="#8b2635" text="Nora" />
-        <CalendarLegend
-          color="#607b54"
-          text="Basecamp"
+        <LegendDot
+          color="#9d293b"
+          label="Nora"
         />
-        <CalendarLegend color="#b98a2f" text="Inne" />
+
+        <LegendDot
+          color="#607b54"
+          label="Basecamp"
+        />
+
+        <LegendDot
+          color="#b98a2f"
+          label="Inne miejsce"
+        />
       </div>
     </div>
   );
 }
 
-function CalendarLegend({ color, text }) {
+function AppHeader({ subtitle, logout }) {
   return (
-    <span
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 5,
-      }}
-    >
-      <span
-        style={{
-          width: 7,
-          height: 7,
-          borderRadius: 10,
-          background: color,
-        }}
-      />
-      {text}
-    </span>
+    <header style={headerStyle}>
+      <div style={containerStyle}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            gap: 15,
+            alignItems: "flex-start",
+          }}
+        >
+          <div>
+            <div
+              style={{
+                fontSize: 12,
+                letterSpacing: 2.2,
+                opacity: 0.72,
+                fontWeight: 700,
+              }}
+            >
+              5 WDH • CZERWONE BERETY
+            </div>
+
+            <h1
+              style={{
+                margin: "7px 0 5px",
+                fontSize: 30,
+              }}
+            >
+              Centrum Dowodzenia
+            </h1>
+
+            <div style={{ opacity: 0.75 }}>
+              {subtitle}
+            </div>
+          </div>
+
+          <button
+            onClick={logout}
+            style={{
+              border:
+                "1px solid rgba(255,255,255,.3)",
+              background:
+                "rgba(255,255,255,.08)",
+              color: "white",
+              borderRadius: 11,
+              padding: "8px 10px",
+              cursor: "pointer",
+            }}
+          >
+            Wyloguj
+          </button>
+        </div>
+      </div>
+    </header>
   );
 }
 
@@ -2971,49 +2843,42 @@ function BottomNav({
   setActiveTab,
 }) {
   return (
-    <nav style={bottomNavStyle}>
-      {tabs.map((tab) => {
-        const active = tab === activeTab;
-
-        return (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            style={{
-              border: 0,
-              background: "transparent",
-              color: active ? "#8b2635" : "#758079",
-              fontWeight: active ? 900 : 600,
-              fontSize: 11,
-              cursor: "pointer",
-              padding: "9px 5px 8px",
-              borderTop: active
-                ? "3px solid #8b2635"
-                : "3px solid transparent",
-            }}
-          >
-            <div
-              style={{
-                fontSize: 17,
-                lineHeight: 1,
-                marginBottom: 5,
-              }}
-            >
-              {tab === "Grafik"
-                ? "▦"
-                : tab === "Moje"
-                ? "★"
-                : tab === "Wyjazdy"
-                ? "⌁"
-                : tab === "Zadania"
-                ? "✓"
-                : "•••"}
-            </div>
-
-            {tab}
-          </button>
-        );
-      })}
+    <nav
+      style={{
+        position: "fixed",
+        bottom: 0,
+        left: 0,
+        right: 0,
+        background: "rgba(255,255,255,.97)",
+        borderTop: "1px solid #dde1dd",
+        display: "flex",
+        justifyContent: "space-around",
+        zIndex: 50,
+        padding: "11px 3px 14px",
+        boxShadow:
+          "0 -5px 18px rgba(0,0,0,.04)",
+      }}
+    >
+      {tabs.map((tab) => (
+        <button
+          key={tab}
+          onClick={() => setActiveTab(tab)}
+          style={{
+            border: 0,
+            background: "transparent",
+            color:
+              activeTab === tab
+                ? "#8b2635"
+                : "#68736d",
+            fontWeight:
+              activeTab === tab ? 800 : 500,
+            cursor: "pointer",
+            padding: "6px 8px",
+          }}
+        >
+          {tab}
+        </button>
+      ))}
     </nav>
   );
 }
@@ -3021,34 +2886,30 @@ function BottomNav({
 function ModalBackground({ children, close }) {
   return (
     <div
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) {
-          close();
-        }
-      }}
+      onClick={close}
       style={{
         position: "fixed",
         inset: 0,
-        background: "rgba(11,25,18,.58)",
+        background: "rgba(10,20,15,.58)",
         zIndex: 100,
         display: "flex",
         alignItems: "flex-end",
         justifyContent: "center",
-        padding: 12,
-        boxSizing: "border-box",
       }}
     >
       <div
+        onClick={(event) =>
+          event.stopPropagation()
+        }
         style={{
-          background: "#f7f5ef",
+          background: "#f7f6f1",
           width: "100%",
-          maxWidth: 560,
-          maxHeight: "91vh",
-          overflowY: "auto",
-          borderRadius: "24px 24px 18px 18px",
-          padding: 21,
+          maxWidth: 600,
+          borderRadius: "26px 26px 0 0",
+          padding: "23px 18px 28px",
           boxSizing: "border-box",
-          boxShadow: "0 -10px 40px rgba(0,0,0,.18)",
+          maxHeight: "90vh",
+          overflowY: "auto",
         }}
       >
         {children}
@@ -3060,20 +2921,13 @@ function ModalBackground({ children, close }) {
 function SimplePage({ title, text }) {
   return (
     <>
-      <div style={eyebrowStyle}>
-        Centrum Dowodzenia
-      </div>
-
-      <h2 style={{ margin: "4px 0 16px" }}>
-        {title}
-      </h2>
+      <h2>{title}</h2>
 
       <div style={cardStyle}>
         <p
           style={{
+            color: "#69746d",
             margin: 0,
-            color: "#617068",
-            lineHeight: 1.6,
           }}
         >
           {text}
@@ -3083,209 +2937,76 @@ function SimplePage({ title, text }) {
   );
 }
 
-function ParentApp({ logout }) {
-  const [activeTab, setActiveTab] =
-    useState("Moje");
-
+function Dot({ color }) {
   return (
-    <main style={appStyle}>
-      <AppHeader
-        subtitle="Panel rodzica"
-        logout={logout}
-      />
+    <span
+      style={{
+        width: 6,
+        height: 6,
+        borderRadius: "50%",
+        background: color,
+      }}
+    />
+  );
+}
 
-      <section style={containerPadding}>
-        {activeTab === "Moje" && (
-          <>
-            <div style={eyebrowStyle}>
-              Panel rodzica
-            </div>
-
-            <h2 style={{ margin: "4px 0 16px" }}>
-              Najbliższe wydarzenia
-            </h2>
-
-            <div
-              style={{
-                display: "grid",
-                gap: 12,
-              }}
-            >
-              {PARENT_EVENTS.map((event) => (
-                <div
-                  key={event.id}
-                  style={{
-                    ...cardStyle,
-                    borderLeft:
-                      "5px solid #8b2635",
-                  }}
-                >
-                  <div style={eyebrowStyle}>
-                    {event.type}
-                  </div>
-
-                  <h3
-                    style={{
-                      margin: "6px 0 9px",
-                    }}
-                  >
-                    {event.title}
-                  </h3>
-
-                  <div
-                    style={{
-                      color: "#526159",
-                      lineHeight: 1.7,
-                    }}
-                  >
-                    📅 {formatDate(event.date)}
-                    <br />
-                    🕐 {event.time}
-                    <br />
-                    📍 {event.location}
-
-                    {event.bring && (
-                      <>
-                        <br />
-                        🎒 {event.bring}
-                      </>
-                    )}
-
-                    {event.cost && (
-                      <>
-                        <br />
-                        💰 {event.cost}
-                        {event.deadline
-                          ? ` • do ${event.deadline}`
-                          : ""}
-                      </>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-
-        {activeTab === "Kalendarz" && (
-          <SimplePage
-            title="Kalendarz"
-            text="Tutaj rodzic zobaczy zbiórki, wyjazdy i wydarzenia dotyczące dziecka."
-          />
-        )}
-
-        {activeTab === "Dokumenty" && (
-          <SimplePage
-            title="Dokumenty"
-            text="Tutaj będą zgody, informacje organizacyjne i potrzebne dokumenty."
-          />
-        )}
-      </section>
-
-      <BottomNav
-        tabs={[
-          "Moje",
-          "Kalendarz",
-          "Dokumenty",
-        ]}
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
-      />
-    </main>
+function LegendDot({ color, label }) {
+  return (
+    <span
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+      }}
+    >
+      <Dot color={color} />
+      {label}
+    </span>
   );
 }
 
 const appStyle = {
-  margin: 0,
   minHeight: "100vh",
-  background: "#f2f1eb",
+  background: "#f2f0e7",
   color: "#17231c",
   fontFamily:
-    "Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    "Inter, Arial, Helvetica, sans-serif",
   paddingBottom: 90,
 };
 
 const headerStyle = {
   background:
-    "linear-gradient(135deg, #102c20 0%, #173b2b 100%)",
-  padding: "20px max(18px, calc((100% - 760px) / 2))",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  gap: 15,
-  boxShadow: "0 6px 24px rgba(13,39,28,.16)",
+    "linear-gradient(135deg, #122d22 0%, #214c38 100%)",
+  color: "white",
+  padding: "28px 20px 32px",
+  borderRadius: "0 0 30px 30px",
+};
+
+const containerStyle = {
+  maxWidth: 900,
+  margin: "0 auto",
 };
 
 const containerPadding = {
-  width: "100%",
-  maxWidth: 760,
-  margin: "0 auto",
-  padding: "22px 16px",
-  boxSizing: "border-box",
+  ...containerStyle,
+  padding: "22px 15px",
 };
 
 const eyebrowStyle = {
-  color: "#8b2635",
-  fontSize: 10,
-  letterSpacing: 1.45,
-  fontWeight: 900,
   textTransform: "uppercase",
-};
-
-const calendarArrowStyle = {
-  border: "1px solid #dde1dd",
-  background: "#f8f9f7",
-  width: 34,
-  height: 34,
-  borderRadius: 11,
-  cursor: "pointer",
-  color: "#173b2b",
-  fontWeight: 900,
-};
-
-const bottomNavStyle = {
-  position: "fixed",
-  left: 0,
-  right: 0,
-  bottom: 0,
-  zIndex: 50,
-  background: "rgba(255,255,255,.97)",
-  borderTop: "1px solid #dfe3df",
-  boxShadow: "0 -5px 22px rgba(0,0,0,.055)",
-  display: "grid",
-  gridTemplateColumns: "repeat(5, 1fr)",
-  padding:
-    "0 max(4px, calc((100% - 760px) / 2)) env(safe-area-inset-bottom)",
+  fontSize: 12,
+  fontWeight: 800,
+  color: "#68746d",
+  letterSpacing: 1,
 };
 
 const centerScreen = {
   minHeight: "100vh",
-  display: "grid",
-  placeItems: "center",
-  background: "#f2f1eb",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  background: "#f2f0e7",
   color: "#173b2b",
   fontFamily:
-    "Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-};
-
-const loginPageStyle = {
-  minHeight: "100vh",
-  background:
-    "linear-gradient(145deg, #102c20 0%, #173b2b 48%, #1e4a36 100%)",
-  display: "grid",
-  placeItems: "center",
-  padding: 18,
-  boxSizing: "border-box",
-  fontFamily:
-    "Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-};
-
-const loginCardStyle = {
-  width: "100%",
-  maxWidth: 420,
-  background: "#f7f5ef",
-  borderRadius: 26,
-  padding: 25,
-  boxSizing: "border-box",
-  boxShadow: "0 25px 70px rgba(0,0,0,.25)",
+    "Inter, Arial, Helvetica, sans-serif",
 };
