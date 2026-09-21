@@ -1700,676 +1700,1592 @@ export default function Home() {
         activeTab={activeTab}
         setActiveTab={setActiveTab}
       />
-            if (loading) {
-    return (
-      <div style={centerScreen}>
-        <strong>Ładowanie Centrum Dowodzenia...</strong>
-      </div>
-    );
-  }
+                {modalOpen && (
+        <ModalBackground
+          close={() => !saving && setModalOpen(false)}
+        >
+          <div style={eyebrowStyle}>Grafik harcówki</div>
 
-  if (!session) {
-    return (
-      <LoginScreen
-        email={email}
-        setEmail={setEmail}
-        password={password}
-        setPassword={setPassword}
-        login={login}
-        error={loginError}
-        loggingIn={loggingIn}
-      />
-    );
-  }
+          <h2 style={{ marginTop: 5 }}>Nowa rezerwacja</h2>
 
-  if (role === "parent") {
-    return <ParentApp logout={logout} />;
-  }
+          <p
+            style={{
+              color: "#69746d",
+              marginTop: -5,
+              lineHeight: 1.5,
+            }}
+          >
+            Rezerwujesz wybrane miejsce dla całej drużyny
+            albo konkretnego zastępu.
+          </p>
 
-  const dayReservations = reservations
-    .filter((item) => item.date === selectedDate)
-    .filter((item) => {
-      if (locationFilter === "Wszystkie") return true;
+          <div style={{ display: "grid", gap: 15 }}>
+            <label>
+              <strong>Kto rezerwuje?</strong>
 
-      if (locationFilter === "Inne") {
-        return !MAIN_LOCATIONS.includes(item.location);
-      }
-
-      return item.location === locationFilter;
-    })
-    .sort((a, b) => a.time.localeCompare(b.time));
-
-  const calendarDays = getCalendarDays(
-    calendarYear,
-    calendarMonth
-  );
-
-  const monthName = new Intl.DateTimeFormat("pl-PL", {
-    month: "long",
-    year: "numeric",
-  }).format(new Date(calendarYear, calendarMonth, 1));
-
-  const validTimes = availableTimesForDate(selectedDate);
-
-  const today = dateToString(new Date());
-
-  const visibleEvents = events
-    .filter((item) => item.event_date >= today)
-    .filter((item) => {
-      if (role === "admin") return true;
-      if (item.whole_troop) return true;
-
-      return myPatrolIds.includes(Number(item.patrol_id));
-    });
-
-  const ownReservations = reservations.filter(
-    (item) =>
-      !item.isEvent &&
-      item.reservedBy === session.user.id &&
-      item.date >= today
-  );
-
-  const myItems = [
-    ...visibleEvents.map((item) => ({
-      kind: "event",
-      date: item.event_date,
-      time: normalizeTime(item.start_time),
-      data: item,
-    })),
-
-    ...ownReservations.map((item) => ({
-      kind: "reservation",
-      date: item.date,
-      time: item.time,
-      data: item,
-    })),
-  ].sort((a, b) =>
-    `${a.date}T${a.time}`.localeCompare(`${b.date}T${b.time}`)
-  );
-
-  return (
-    <main style={appStyle}>
-      <AppHeader
-        subtitle={
-          role === "admin"
-            ? "Panel administratora"
-            : "Centrum drużyny"
-        }
-        logout={logout}
-      />
-
-      <section style={containerPadding}>
-        {activeTab === "Grafik" && (
-          <>
-            <MonthlyCalendar
-              calendarDays={calendarDays}
-              monthName={monthName}
-              selectedDate={selectedDate}
-              reservations={reservations}
-              changeMonth={changeMonth}
-              selectCalendarDay={selectCalendarDay}
-            />
-
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                gap: 15,
-                alignItems: "center",
-                marginBottom: 18,
-                flexWrap: "wrap",
-              }}
-            >
-              <div>
-                <div style={eyebrowStyle}>Grafik harcówki</div>
-
-                <h2
-                  style={{
-                    margin: "4px 0 0",
-                    fontSize: 23,
-                    textTransform: "capitalize",
-                  }}
-                >
-                  {formatDate(selectedDate)}
-                </h2>
-              </div>
-
-              <button
-                style={primaryStyle}
-                onClick={() => openReservation()}
+              <select
+                value={form.reserver}
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+                    reserver: event.target.value,
+                  })
+                }
+                style={inputStyle}
               >
-                + Rezerwacja
-              </button>
-            </div>
+                <option value="whole">Cała drużyna</option>
+
+                {patrols.map((patrol) => (
+                  <option
+                    key={patrol.id}
+                    value={String(patrol.id)}
+                  >
+                    {patrol.name}
+                    {patrol.leader_name
+                      ? ` — ${patrol.leader_name}`
+                      : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              <strong>Miejsce</strong>
+
+              <select
+                value={form.location}
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+                    location: event.target.value,
+                    customLocation:
+                      event.target.value === "Inne"
+                        ? form.customLocation
+                        : "",
+                  })
+                }
+                style={inputStyle}
+              >
+                <option value="Nora">Nora</option>
+                <option value="Basecamp">Basecamp</option>
+                <option value="Inne">
+                  Inne miejsce...
+                </option>
+              </select>
+            </label>
+
+            {form.location === "Inne" && (
+              <label>
+                <strong>Wpisz miejsce</strong>
+
+                <input
+                  type="text"
+                  value={form.customLocation}
+                  onChange={(event) =>
+                    setForm({
+                      ...form,
+                      customLocation: event.target.value,
+                    })
+                  }
+                  placeholder="np. Olszynki, Orlik, Stróżki..."
+                  style={inputStyle}
+                />
+              </label>
+            )}
 
             <div
               style={{
                 ...cardStyle,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 8,
-                marginBottom: 16,
+                boxShadow: "none",
+                background: "#f5f7f4",
+                border: "1px solid #e1e5e1",
+              }}
+            >
+              <div style={eyebrowStyle}>TERMIN</div>
+
+              <strong
+                style={{
+                  display: "block",
+                  marginTop: 5,
+                  textTransform: "capitalize",
+                }}
+              >
+                {formatDate(selectedDate)}
+              </strong>
+            </div>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 10,
+              }}
+            >
+              <label>
+                <strong>Od</strong>
+
+                <select
+                  value={form.startTime}
+                  onChange={(event) => {
+                    const start = event.target.value;
+
+                    setForm({
+                      ...form,
+                      startTime: start,
+                      endTime:
+                        form.endTime <= start
+                          ? addMinutes(start, 30)
+                          : form.endTime,
+                    });
+                  }}
+                  style={inputStyle}
+                >
+                  {validTimes.map((time) => (
+                    <option key={time} value={time}>
+                      {time}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label>
+                <strong>Do</strong>
+
+                <select
+                  value={form.endTime}
+                  onChange={(event) =>
+                    setForm({
+                      ...form,
+                      endTime: event.target.value,
+                    })
+                  }
+                  style={inputStyle}
+                >
+                  {validTimes
+                    .map((time) => addMinutes(time, 30))
+                    .filter(
+                      (time, index, array) =>
+                        array.indexOf(time) === index &&
+                        time > form.startTime
+                    )
+                    .map((time) => (
+                      <option key={time} value={time}>
+                        {time}
+                      </option>
+                    ))}
+                </select>
+              </label>
+            </div>
+
+            <div
+              style={{
+                background: "#fff9e9",
+                border: "1px solid #ead8a7",
+                borderRadius: 14,
+                padding: 13,
+                color: "#6f5722",
+                lineHeight: 1.5,
+                fontSize: 14,
+              }}
+            >
+              <strong>
+                {form.startTime}–{form.endTime}
+              </strong>
+              <br />
+              Aplikacja zarezerwuje automatycznie wszystkie
+              półgodzinne sloty w tym przedziale.
+            </div>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 9,
               }}
             >
               <button
                 style={secondaryStyle}
-                onClick={() => changeDay(-1)}
+                disabled={saving}
+                onClick={() => setModalOpen(false)}
               >
-                ←
+                Anuluj
               </button>
+
+              <button
+                style={{
+                  ...primaryStyle,
+                  opacity: saving ? 0.6 : 1,
+                }}
+                disabled={saving}
+                onClick={saveReservation}
+              >
+                {saving ? "Zapisuję..." : "Zarezerwuj"}
+              </button>
+            </div>
+          </div>
+        </ModalBackground>
+      )}
+
+      {detailsOpen && (
+        <ModalBackground
+          close={() => setDetailsOpen(null)}
+        >
+          <div style={eyebrowStyle}>REZERWACJA</div>
+
+          <h2 style={{ marginBottom: 8 }}>
+            {detailsOpen.patrol}
+          </h2>
+
+          <div
+            style={{
+              lineHeight: 1.8,
+              color: "#526159",
+            }}
+          >
+            📅 {formatDate(detailsOpen.date)}
+            <br />
+            🕐 {detailsOpen.time}–
+            {detailsOpen.endTime ||
+              addMinutes(detailsOpen.time, 30)}
+            <br />
+            📍 {detailsOpen.location}
+          </div>
+
+          {detailsOpen.leader && (
+            <div
+              style={{
+                ...cardStyle,
+                boxShadow: "none",
+                background: "#edf1ed",
+                marginTop: 15,
+              }}
+            >
+              <strong>Odpowiedzialny</strong>
+
+              <div
+                style={{
+                  marginTop: 5,
+                  color: "#526159",
+                }}
+              >
+                {detailsOpen.leader}
+              </div>
+            </div>
+          )}
+
+          {(detailsOpen.reservedBy === session.user.id ||
+            role === "admin") && (
+            <button
+              onClick={() =>
+                removeReservation(detailsOpen)
+              }
+              style={{
+                ...secondaryStyle,
+                width: "100%",
+                marginTop: 15,
+                borderColor: "#d9b8bd",
+                color: "#8b2635",
+                fontWeight: 800,
+              }}
+            >
+              Anuluj rezerwację
+            </button>
+          )}
+
+          <button
+            style={{
+              ...primaryStyle,
+              width: "100%",
+              marginTop: 10,
+            }}
+            onClick={() => setDetailsOpen(null)}
+          >
+            Zamknij
+          </button>
+        </ModalBackground>
+      )}
+
+      {eventModalOpen && (
+        <ModalBackground
+          close={() =>
+            !eventSaving && setEventModalOpen(false)
+          }
+        >
+          <div style={eyebrowStyle}>
+            Panel administratora
+          </div>
+
+          <h2 style={{ marginTop: 5 }}>
+            Nowe wydarzenie
+          </h2>
+
+          <p
+            style={{
+              color: "#69746d",
+              marginTop: -5,
+              lineHeight: 1.5,
+            }}
+          >
+            Dodaj zbiórkę, służbę, wyjazd lub inne
+            wydarzenie drużyny.
+          </p>
+
+          <div style={{ display: "grid", gap: 15 }}>
+            <label>
+              <strong>Nazwa wydarzenia</strong>
+
+              <input
+                type="text"
+                value={eventForm.title}
+                onChange={(event) =>
+                  setEventForm({
+                    ...eventForm,
+                    title: event.target.value,
+                  })
+                }
+                placeholder="np. Zbiórka drużyny"
+                style={inputStyle}
+              />
+            </label>
+
+            <label>
+              <strong>Typ</strong>
+
+              <select
+                value={eventForm.eventType}
+                onChange={(event) =>
+                  setEventForm({
+                    ...eventForm,
+                    eventType: event.target.value,
+                  })
+                }
+                style={inputStyle}
+              >
+                <option value="zbiórka">Zbiórka</option>
+                <option value="wydarzenie">
+                  Wydarzenie
+                </option>
+                <option value="służba">Służba</option>
+                <option value="wyjazd">Wyjazd</option>
+                <option value="biwak">Biwak</option>
+                <option value="rajd">Rajd</option>
+                <option value="zawody">Zawody</option>
+                <option value="inne">Inne</option>
+              </select>
+            </label>
+
+            <label>
+              <strong>Dla kogo?</strong>
+
+              <select
+                value={eventForm.audience}
+                onChange={(event) =>
+                  setEventForm({
+                    ...eventForm,
+                    audience: event.target.value,
+                  })
+                }
+                style={inputStyle}
+              >
+                <option value="whole">
+                  Cała drużyna
+                </option>
+                <option value="patrol">
+                  Konkretny zastęp
+                </option>
+              </select>
+            </label>
+
+            {eventForm.audience === "patrol" && (
+              <label>
+                <strong>Zastęp</strong>
+
+                <select
+                  value={eventForm.patrolId}
+                  onChange={(event) =>
+                    setEventForm({
+                      ...eventForm,
+                      patrolId: event.target.value,
+                    })
+                  }
+                  style={inputStyle}
+                >
+                  {patrols.map((patrol) => (
+                    <option
+                      key={patrol.id}
+                      value={patrol.id}
+                    >
+                      {patrol.name} —{" "}
+                      {patrol.leader_name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+
+            <label>
+              <strong>Data</strong>
 
               <input
                 type="date"
-                value={selectedDate}
-                onChange={(event) => {
-                  const value = event.target.value;
-                  if (!value) return;
-
-                  const date = new Date(`${value}T12:00:00`);
-
-                  setSelectedDate(value);
-                  setCalendarYear(date.getFullYear());
-                  setCalendarMonth(date.getMonth());
-                }}
-                style={{
-                  border: 0,
-                  fontWeight: 800,
-                  fontSize: 15,
-                  background: "transparent",
-                  color: "#17231c",
-                }}
+                value={eventForm.date}
+                onChange={(event) =>
+                  setEventForm({
+                    ...eventForm,
+                    date: event.target.value,
+                  })
+                }
+                style={inputStyle}
               />
-
-              <button
-                style={secondaryStyle}
-                onClick={() => changeDay(1)}
-              >
-                →
-              </button>
-            </div>
+            </label>
 
             <div
               style={{
-                display: "flex",
-                gap: 8,
-                overflowX: "auto",
-                paddingBottom: 4,
-                marginBottom: 18,
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 10,
               }}
             >
-              {["Wszystkie", "Nora", "Basecamp", "Inne"].map(
-                (location) => (
-                  <button
-                    key={location}
-                    onClick={() => setLocationFilter(location)}
-                    style={{
-                      border:
-                        locationFilter === location
-                          ? "1px solid #173b2b"
-                          : "1px solid #d5d9d5",
-                      background:
-                        locationFilter === location
-                          ? "#173b2b"
-                          : "white",
-                      color:
-                        locationFilter === location
-                          ? "white"
-                          : "#273b31",
-                      borderRadius: 30,
-                      padding: "9px 16px",
-                      whiteSpace: "nowrap",
-                      cursor: "pointer",
-                      fontWeight:
-                        locationFilter === location ? 700 : 500,
-                    }}
-                  >
-                    {location}
-                  </button>
-                )
-              )}
+              <label>
+                <strong>Od</strong>
+
+                <input
+                  type="time"
+                  step="1800"
+                  value={eventForm.startTime}
+                  onChange={(event) =>
+                    setEventForm({
+                      ...eventForm,
+                      startTime: event.target.value,
+                    })
+                  }
+                  style={inputStyle}
+                />
+              </label>
+
+              <label>
+                <strong>Do</strong>
+
+                <input
+                  type="time"
+                  step="1800"
+                  value={eventForm.endTime}
+                  onChange={(event) =>
+                    setEventForm({
+                      ...eventForm,
+                      endTime: event.target.value,
+                    })
+                  }
+                  style={inputStyle}
+                />
+              </label>
             </div>
 
-            {scheduleLoading && (
+            <label>
+              <strong>Miejsce</strong>
+
+              <select
+                value={eventForm.location}
+                onChange={(event) =>
+                  setEventForm({
+                    ...eventForm,
+                    location: event.target.value,
+                    customLocation:
+                      event.target.value === "Inne"
+                        ? eventForm.customLocation
+                        : "",
+                  })
+                }
+                style={inputStyle}
+              >
+                <option value="Nora">Nora</option>
+                <option value="Basecamp">
+                  Basecamp
+                </option>
+                <option value="Inne">
+                  Inne miejsce...
+                </option>
+              </select>
+            </label>
+
+            {eventForm.location === "Inne" && (
+              <label>
+                <strong>Wpisz miejsce</strong>
+
+                <input
+                  type="text"
+                  value={eventForm.customLocation}
+                  onChange={(event) =>
+                    setEventForm({
+                      ...eventForm,
+                      customLocation:
+                        event.target.value,
+                    })
+                  }
+                  placeholder="np. Olszynki, Orlik, las Zamość..."
+                  style={inputStyle}
+                />
+              </label>
+            )}
+
+            <label>
+              <strong>Opis</strong>
+
+              <textarea
+                value={eventForm.description}
+                onChange={(event) =>
+                  setEventForm({
+                    ...eventForm,
+                    description: event.target.value,
+                  })
+                }
+                placeholder="Co robimy? Najważniejsze informacje..."
+                rows={4}
+                style={{
+                  ...inputStyle,
+                  resize: "vertical",
+                  fontFamily: "inherit",
+                }}
+              />
+            </label>
+
+            <label>
+              <strong>Co zabrać?</strong>
+
+              <textarea
+                value={eventForm.bring}
+                onChange={(event) =>
+                  setEventForm({
+                    ...eventForm,
+                    bring: event.target.value,
+                  })
+                }
+                placeholder="np. mundur, latarka, woda..."
+                rows={3}
+                style={{
+                  ...inputStyle,
+                  resize: "vertical",
+                  fontFamily: "inherit",
+                }}
+              />
+            </label>
+
+            {role === "admin" && (
               <div
                 style={{
                   ...cardStyle,
-                  textAlign: "center",
-                  color: "#68736d",
-                  marginBottom: 12,
+                  background: "#faf8f0",
+                  boxShadow: "none",
+                  border: "1px solid #e5dfcc",
                 }}
               >
-                Pobieram rezerwacje...
-              </div>
-            )}
-
-            {!scheduleLoading && dayReservations.length === 0 && (
-              <div
-                style={{
-                  ...cardStyle,
-                  textAlign: "center",
-                  color: "#68736d",
-                  marginBottom: 12,
-                }}
-              >
-                Brak rezerwacji na ten dzień.
-              </div>
-            )}
-
-            <div style={{ display: "grid", gap: 10 }}>
-              {dayReservations.map((reservation) => (
-                <button
-                  key={reservation.id}
-                  onClick={() => {
-                    if (reservation.isEvent) {
-                      const found = events.find(
-                        (item) =>
-                          Number(item.id) ===
-                          Number(reservation.eventId)
-                      );
-
-                      if (found) setEventDetails(found);
-                    } else {
-                      setDetailsOpen(reservation);
-                    }
-                  }}
+                <label
                   style={{
-                    ...cardStyle,
-                    width: "100%",
-                    border: 0,
-                    borderLeft: reservation.isEvent
-                      ? "5px solid #607b54"
-                      : reservation.patrol === "Cała drużyna"
-                      ? "5px solid #b98a2f"
-                      : "5px solid #8b2635",
-                    textAlign: "left",
-                    display: "grid",
-                    gridTemplateColumns:
-                      "minmax(90px,110px) 1fr auto",
+                    display: "flex",
                     alignItems: "center",
-                    gap: 12,
+                    gap: 10,
                     cursor: "pointer",
-                    color: "#17231c",
                   }}
                 >
-                  <strong>
-                    {reservation.time}–
-                    {reservation.endTime ||
-                      addMinutes(reservation.time, 30)}
-                  </strong>
+                  <input
+                    type="checkbox"
+                    checked={eventForm.hasPayment}
+                    onChange={(event) =>
+                      setEventForm({
+                        ...eventForm,
+                        hasPayment:
+                          event.target.checked,
+                        cost: event.target.checked
+                          ? eventForm.cost
+                          : "",
+                        paymentDeadline:
+                          event.target.checked
+                            ? eventForm.paymentDeadline
+                            : "",
+                      })
+                    }
+                    style={{
+                      width: 19,
+                      height: 19,
+                    }}
+                  />
 
                   <div>
-                    <div
-                      style={{
-                        fontSize: 17,
-                        fontWeight: 800,
-                      }}
-                    >
-                      {reservation.patrol}
-                    </div>
+                    <strong>Dodać płatność?</strong>
 
                     <div
                       style={{
-                        color: "#6a746e",
                         fontSize: 13,
+                        color: "#68736d",
                         marginTop: 3,
                       }}
                     >
-                      {reservation.isEvent
-                        ? "wydarzenie"
-                        : reservation.leader ||
-                          "rezerwacja harcówki"}
+                      Włącz tylko wtedy, gdy to
+                      wydarzenie jest płatne.
                     </div>
                   </div>
+                </label>
 
-                  <span
+                {eventForm.hasPayment && (
+                  <div
                     style={{
-                      background: "#edf1ed",
-                      padding: "8px 10px",
-                      borderRadius: 11,
-                      fontSize: 12,
-                      fontWeight: 800,
+                      display: "grid",
+                      gridTemplateColumns:
+                        "1fr 1fr",
+                      gap: 10,
+                      marginTop: 15,
                     }}
                   >
-                    {reservation.location}
-                  </span>
-                </button>
-              ))}
-            </div>
+                    <label>
+                      <strong>Kwota</strong>
 
-            <h3 style={{ margin: "26px 0 10px" }}>
-              Wolne terminy
-            </h3>
-
-            <div style={{ display: "grid", gap: 8 }}>
-              {locationFilter !== "Inne" &&
-                validTimes.flatMap((time) => {
-                  const locations =
-                    locationFilter === "Wszystkie"
-                      ? MAIN_LOCATIONS
-                      : [locationFilter];
-
-                  return locations.map((location) => {
-                    const occupied = reservations.some(
-                      (item) => {
-                        if (
-                          item.date !== selectedDate ||
-                          item.location !== location
-                        ) {
-                          return false;
+                      <input
+                        type="text"
+                        value={eventForm.cost}
+                        onChange={(event) =>
+                          setEventForm({
+                            ...eventForm,
+                            cost: event.target.value,
+                          })
                         }
+                        placeholder="np. 35 zł"
+                        style={inputStyle}
+                      />
+                    </label>
 
-                        return (
-                          time >= item.time &&
-                          time < item.endTime
-                        );
-                      }
-                    );
+                    <label>
+                      <strong>
+                        Termin płatności
+                      </strong>
 
-                    if (occupied) return null;
-
-                    return (
-                      <div
-                        key={`${time}-${location}`}
-                        style={{
-                          border: "2px dashed #ccd2cd",
-                          borderRadius: 16,
-                          padding: 14,
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "space-between",
-                          gap: 10,
-                        }}
-                      >
-                        <div>
-                          <strong>
-                            {time}–{addMinutes(time, 30)}
-                          </strong>
-
-                          <div
-                            style={{
-                              fontSize: 13,
-                              color: "#6c756f",
-                              marginTop: 3,
-                            }}
-                          >
-                            {location} • wolne
-                          </div>
-                        </div>
-
-                        <button
-                          style={secondaryStyle}
-                          onClick={() =>
-                            openReservation(time, location)
-                          }
-                        >
-                          Zarezerwuj
-                        </button>
-                      </div>
-                    );
-                  });
-                })}
-
-              <button
-                onClick={() =>
-                  openReservation(
-                    validTimes[0] || "17:30",
-                    "Inne miejsce"
-                  )
-                }
-                style={{
-                  border: "2px dashed #b98a2f",
-                  borderRadius: 16,
-                  padding: 15,
-                  background: "#fffdf7",
-                  color: "#72571e",
-                  cursor: "pointer",
-                  fontWeight: 800,
-                }}
-              >
-                + Zarezerwuj inne miejsce
-              </button>
-            </div>
-          </>
-        )}
-
-        {activeTab === "Moje" && (
-          <>
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                gap: 12,
-                marginBottom: 18,
-                flexWrap: "wrap",
-              }}
-            >
-              <div>
-                <div style={eyebrowStyle}>Twoje centrum</div>
-                <h2 style={{ margin: "4px 0 0" }}>
-                  Co mnie czeka?
-                </h2>
-              </div>
-
-              {role === "admin" && (
-                <button
-                  style={primaryStyle}
-                  onClick={openEventForm}
-                >
-                  + Wydarzenie
-                </button>
-              )}
-            </div>
-
-            {myItems.length === 0 && (
-              <div
-                style={{
-                  ...cardStyle,
-                  color: "#68736d",
-                  textAlign: "center",
-                }}
-              >
-                Na razie nic tutaj nie ma.
+                      <input
+                        type="date"
+                        value={
+                          eventForm.paymentDeadline
+                        }
+                        onChange={(event) =>
+                          setEventForm({
+                            ...eventForm,
+                            paymentDeadline:
+                              event.target.value,
+                          })
+                        }
+                        style={inputStyle}
+                      />
+                    </label>
+                  </div>
+                )}
               </div>
             )}
 
-            <div style={{ display: "grid", gap: 12 }}>
-              {myItems.map((item) => {
-                if (item.kind === "reservation") {
-                  const reservation = item.data;
-
-                  return (
-                    <button
-                      key={`reservation-${reservation.id}`}
-                      onClick={() =>
-                        setDetailsOpen(reservation)
-                      }
-                      style={{
-                        ...cardStyle,
-                        border: 0,
-                        borderLeft: "5px solid #b98a2f",
-                        textAlign: "left",
-                        cursor: "pointer",
-                        color: "#17231c",
-                      }}
-                    >
-                      <div style={eyebrowStyle}>
-                        MOJA REZERWACJA
-                      </div>
-
-                      <h3
-                        style={{
-                          margin: "7px 0 8px",
-                          fontSize: 19,
-                        }}
-                      >
-                        {reservation.patrol}
-                      </h3>
-
-                      <div
-                        style={{
-                          lineHeight: 1.7,
-                          color: "#526159",
-                        }}
-                      >
-                        📅 {formatDate(reservation.date)}
-                        <br />
-                        🕐 {reservation.time}–
-                        {reservation.endTime ||
-                          addMinutes(reservation.time, 30)}
-                        <br />
-                        📍 {reservation.location}
-                      </div>
-                    </button>
-                  );
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 9,
+              }}
+            >
+              <button
+                style={secondaryStyle}
+                disabled={eventSaving}
+                onClick={() =>
+                  setEventModalOpen(false)
                 }
+              >
+                Anuluj
+              </button>
 
-                const eventItem = item.data;
-
-                const patrol = patrols.find(
-                  (patrolItem) =>
-                    Number(patrolItem.id) ===
-                    Number(eventItem.patrol_id)
-                );
-
-                return (
-                  <button
-                    key={`event-${eventItem.id}`}
-                    onClick={() => setEventDetails(eventItem)}
-                    style={{
-                      ...cardStyle,
-                      border: 0,
-                      borderLeft: eventItem.whole_troop
-                        ? "5px solid #8b2635"
-                        : "5px solid #607b54",
-                      textAlign: "left",
-                      cursor: "pointer",
-                      color: "#17231c",
-                    }}
-                  >
-                    <div style={eyebrowStyle}>
-                      {eventItem.whole_troop
-                        ? "CAŁA DRUŻYNA"
-                        : role === "admin"
-                        ? `ZASTĘP • ${
-                            patrol?.name || "Zastęp"
-                          }`
-                        : "TWÓJ ZASTĘP"}
-                    </div>
-
-                    <h3
-                      style={{
-                        margin: "7px 0 8px",
-                        fontSize: 19,
-                      }}
-                    >
-                      {eventItem.title}
-                    </h3>
-
-                    <div
-                      style={{
-                        lineHeight: 1.7,
-                        color: "#526159",
-                      }}
-                    >
-                      📅 {formatDate(eventItem.event_date)}
-                      <br />
-
-                      🕐 {normalizeTime(eventItem.start_time)}
-                      {eventItem.end_time
-                        ? `–${normalizeTime(
-                            eventItem.end_time
-                          )}`
-                        : ""}
-                      <br />
-
-                      📍 {eventItem.location}
-
-                      {eventItem.what_to_bring && (
-                        <>
-                          <br />
-                          🎒 {eventItem.what_to_bring}
-                        </>
-                      )}
-
-                      {eventItem.cost && (
-                        <>
-                          <br />
-                          💰 {eventItem.cost}
-                          {eventItem.payment_deadline
-                            ? ` • do ${formatDate(
-                                eventItem.payment_deadline
-                              )}`
-                            : ""}
-                        </>
-                      )}
-                    </div>
-                  </button>
-                );
-              })}
+              <button
+                style={{
+                  ...primaryStyle,
+                  opacity: eventSaving ? 0.6 : 1,
+                }}
+                disabled={eventSaving}
+                onClick={saveEvent}
+              >
+                {eventSaving
+                  ? "Zapisuję..."
+                  : "Dodaj wydarzenie"}
+              </button>
             </div>
-          </>
-        )}
+          </div>
+        </ModalBackground>
+      )}
 
-        {activeTab === "Wyjazdy" && (
-          <SimplePage
-            title="Wyjazdy"
-            text="Biwaki, rajdy, zawody i wyprawy."
-          />
-        )}
+      {eventDetails && (
+        <ModalBackground
+          close={() => setEventDetails(null)}
+        >
+          <div style={eyebrowStyle}>
+            {eventDetails.whole_troop
+              ? "CAŁA DRUŻYNA"
+              : "WYDARZENIE ZASTĘPU"}
+          </div>
 
-        {activeTab === "Zadania" && (
-          <SimplePage
-            title="Zadania"
-            text="Zadania drużyny: kto, co i do kiedy."
-          />
-        )}
+          <h2 style={{ marginBottom: 8 }}>
+            {eventDetails.title}
+          </h2>
 
-        {activeTab === "Więcej" && (
+          <div
+            style={{
+              lineHeight: 1.8,
+              color: "#526159",
+            }}
+          >
+            📅 {formatDate(eventDetails.event_date)}
+            <br />
+
+            🕐 {normalizeTime(
+              eventDetails.start_time
+            )}
+            {eventDetails.end_time
+              ? `–${normalizeTime(
+                  eventDetails.end_time
+                )}`
+              : ""}
+            <br />
+
+            📍 {eventDetails.location}
+          </div>
+
+          {eventDetails.description && (
+            <div
+              style={{
+                ...cardStyle,
+                boxShadow: "none",
+                background: "#edf1ed",
+                marginTop: 16,
+              }}
+            >
+              <strong>Informacje</strong>
+
+              <p
+                style={{
+                  marginBottom: 0,
+                  lineHeight: 1.6,
+                }}
+              >
+                {eventDetails.description}
+              </p>
+            </div>
+          )}
+
+          {eventDetails.what_to_bring && (
+            <div
+              style={{
+                ...cardStyle,
+                boxShadow: "none",
+                marginTop: 12,
+              }}
+            >
+              <strong>🎒 Co zabrać?</strong>
+
+              <p
+                style={{
+                  marginBottom: 0,
+                  lineHeight: 1.6,
+                }}
+              >
+                {eventDetails.what_to_bring}
+              </p>
+            </div>
+          )}
+
+          {eventDetails.cost && (
+            <div
+              style={{
+                ...cardStyle,
+                boxShadow: "none",
+                background: "#fff9e9",
+                border: "1px solid #ead8a7",
+                marginTop: 12,
+              }}
+            >
+              <strong>💰 Płatność</strong>
+
+              <p
+                style={{
+                  marginBottom: 0,
+                  lineHeight: 1.6,
+                }}
+              >
+                {eventDetails.cost}
+
+                {eventDetails.payment_deadline && (
+                  <>
+                    <br />
+                    Termin:{" "}
+                    {formatDate(
+                      eventDetails.payment_deadline
+                    )}
+                  </>
+                )}
+              </p>
+            </div>
+          )}
+
+          {role === "admin" && (
+            <button
+              onClick={() =>
+                deleteEvent(eventDetails)
+              }
+              style={{
+                ...secondaryStyle,
+                width: "100%",
+                marginTop: 15,
+                borderColor: "#d9b8bd",
+                color: "#8b2635",
+                fontWeight: 800,
+              }}
+            >
+              Usuń wydarzenie
+            </button>
+          )}
+
+          <button
+            style={{
+              ...primaryStyle,
+              width: "100%",
+              marginTop: 10,
+            }}
+            onClick={() => setEventDetails(null)}
+          >
+            Zamknij
+          </button>
+        </ModalBackground>
+      )}
+    </main>
+  );
+}
+                  function LoginScreen({
+  email,
+  setEmail,
+  password,
+  setPassword,
+  login,
+  error,
+  loggingIn,
+}) {
+  return (
+    <main style={loginPageStyle}>
+      <div style={loginCardStyle}>
+        <div
+          style={{
+            width: 54,
+            height: 54,
+            borderRadius: 18,
+            background: "#173b2b",
+            color: "white",
+            display: "grid",
+            placeItems: "center",
+            fontWeight: 900,
+            fontSize: 18,
+            marginBottom: 18,
+          }}
+        >
+          5
+        </div>
+
+        <div style={eyebrowStyle}>
+          5 WDH „Czerwone Berety”
+        </div>
+
+        <h1
+          style={{
+            margin: "5px 0 8px",
+            color: "#173b2b",
+            fontSize: 30,
+          }}
+        >
+          Centrum Dowodzenia
+        </h1>
+
+        <p
+          style={{
+            color: "#69746d",
+            lineHeight: 1.6,
+            marginTop: 0,
+            marginBottom: 24,
+          }}
+        >
+          Grafik, wydarzenia i organizacja drużyny w jednym
+          miejscu.
+        </p>
+
+        <form
+          onSubmit={login}
+          style={{ display: "grid", gap: 14 }}
+        >
+          <label>
+            <strong>E-mail</strong>
+
+            <input
+              type="email"
+              value={email}
+              onChange={(event) =>
+                setEmail(event.target.value)
+              }
+              autoComplete="email"
+              required
+              style={inputStyle}
+            />
+          </label>
+
+          <label>
+            <strong>Hasło</strong>
+
+            <input
+              type="password"
+              value={password}
+              onChange={(event) =>
+                setPassword(event.target.value)
+              }
+              autoComplete="current-password"
+              required
+              style={inputStyle}
+            />
+          </label>
+
+          {error && (
+            <div
+              style={{
+                background: "#fff1f2",
+                border: "1px solid #efc5ca",
+                color: "#8b2635",
+                padding: 12,
+                borderRadius: 12,
+                fontSize: 14,
+              }}
+            >
+              {error}
+            </div>
+          )}
+
+          <button
+            type="submit"
+            disabled={loggingIn}
+            style={{
+              ...primaryStyle,
+              padding: "14px 16px",
+              fontSize: 15,
+              marginTop: 4,
+              opacity: loggingIn ? 0.6 : 1,
+            }}
+          >
+            {loggingIn ? "Logowanie..." : "Zaloguj się"}
+          </button>
+        </form>
+      </div>
+    </main>
+  );
+}
+
+function AppHeader({ subtitle, logout }) {
+  return (
+    <header style={headerStyle}>
+      <div>
+        <div
+          style={{
+            color: "#c8a85a",
+            fontSize: 11,
+            letterSpacing: 1.7,
+            fontWeight: 900,
+          }}
+        >
+          5 WDH • CZERWONE BERETY
+        </div>
+
+        <div
+          style={{
+            color: "white",
+            fontSize: 21,
+            fontWeight: 900,
+            marginTop: 3,
+          }}
+        >
+          Centrum Dowodzenia
+        </div>
+
+        <div
+          style={{
+            color: "#b9c8c0",
+            fontSize: 12,
+            marginTop: 3,
+          }}
+        >
+          {subtitle}
+        </div>
+      </div>
+
+      <button
+        onClick={logout}
+        style={{
+          border: "1px solid rgba(255,255,255,.22)",
+          background: "rgba(255,255,255,.08)",
+          color: "white",
+          borderRadius: 12,
+          padding: "9px 11px",
+          cursor: "pointer",
+          fontWeight: 700,
+        }}
+      >
+        Wyloguj
+      </button>
+    </header>
+  );
+}
+
+function MonthlyCalendar({
+  calendarDays,
+  monthName,
+  selectedDate,
+  reservations,
+  changeMonth,
+  selectCalendarDay,
+}) {
+  return (
+    <div
+      style={{
+        ...cardStyle,
+        marginBottom: 20,
+        padding: 15,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          marginBottom: 15,
+        }}
+      >
+        <button
+          style={calendarArrowStyle}
+          onClick={() => changeMonth(-1)}
+        >
+          ←
+        </button>
+
+        <strong
+          style={{
+            textTransform: "capitalize",
+            color: "#173b2b",
+            fontSize: 16,
+          }}
+        >
+          {monthName}
+        </strong>
+
+        <button
+          style={calendarArrowStyle}
+          onClick={() => changeMonth(1)}
+        >
+          →
+        </button>
+      </div>
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(7, 1fr)",
+          gap: 5,
+          marginBottom: 5,
+        }}
+      >
+        {["Pn", "Wt", "Śr", "Cz", "Pt", "Sb", "Nd"].map(
+          (day) => (
+            <div
+              key={day}
+              style={{
+                textAlign: "center",
+                color: "#7b857f",
+                fontSize: 11,
+                fontWeight: 800,
+                padding: "3px 0",
+              }}
+            >
+              {day}
+            </div>
+          )
+        )}
+      </div>
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(7, 1fr)",
+          gap: 5,
+        }}
+      >
+        {calendarDays.map((date, index) => {
+          if (!date) {
+            return (
+              <div
+                key={`empty-${index}`}
+                style={{ minHeight: 49 }}
+              />
+            );
+          }
+
+          const value = dateToString(date);
+          const selected = value === selectedDate;
+
+          const dayReservations = reservations.filter(
+            (item) => item.date === value
+          );
+
+          const hasNora = dayReservations.some(
+            (item) => item.location === "Nora"
+          );
+
+          const hasBasecamp = dayReservations.some(
+            (item) => item.location === "Basecamp"
+          );
+
+          const hasOther = dayReservations.some(
+            (item) =>
+              !MAIN_LOCATIONS.includes(item.location)
+          );
+
+          return (
+            <button
+              key={value}
+              onClick={() => selectCalendarDay(date)}
+              style={{
+                minHeight: 49,
+                border: selected
+                  ? "2px solid #173b2b"
+                  : "1px solid #e2e5e2",
+                background: selected
+                  ? "#edf2ee"
+                  : "white",
+                borderRadius: 12,
+                cursor: "pointer",
+                color: "#263a30",
+                padding: "6px 3px",
+              }}
+            >
+              <div
+                style={{
+                  fontWeight: selected ? 900 : 700,
+                  fontSize: 13,
+                }}
+              >
+                {date.getDate()}
+              </div>
+
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "center",
+                  gap: 3,
+                  marginTop: 5,
+                  minHeight: 6,
+                }}
+              >
+                {hasNora && (
+                  <span
+                    style={{
+                      width: 5,
+                      height: 5,
+                      borderRadius: 10,
+                      background: "#8b2635",
+                    }}
+                  />
+                )}
+
+                {hasBasecamp && (
+                  <span
+                    style={{
+                      width: 5,
+                      height: 5,
+                      borderRadius: 10,
+                      background: "#607b54",
+                    }}
+                  />
+                )}
+
+                {hasOther && (
+                  <span
+                    style={{
+                      width: 5,
+                      height: 5,
+                      borderRadius: 10,
+                      background: "#b98a2f",
+                    }}
+                  />
+                )}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 12,
+          marginTop: 13,
+          fontSize: 11,
+          color: "#69746d",
+        }}
+      >
+        <CalendarLegend color="#8b2635" text="Nora" />
+        <CalendarLegend
+          color="#607b54"
+          text="Basecamp"
+        />
+        <CalendarLegend color="#b98a2f" text="Inne" />
+      </div>
+    </div>
+  );
+}
+
+function CalendarLegend({ color, text }) {
+  return (
+    <span
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 5,
+      }}
+    >
+      <span
+        style={{
+          width: 7,
+          height: 7,
+          borderRadius: 10,
+          background: color,
+        }}
+      />
+      {text}
+    </span>
+  );
+}
+
+function BottomNav({
+  tabs,
+  activeTab,
+  setActiveTab,
+}) {
+  return (
+    <nav style={bottomNavStyle}>
+      {tabs.map((tab) => {
+        const active = tab === activeTab;
+
+        return (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            style={{
+              border: 0,
+              background: "transparent",
+              color: active ? "#8b2635" : "#758079",
+              fontWeight: active ? 900 : 600,
+              fontSize: 11,
+              cursor: "pointer",
+              padding: "9px 5px 8px",
+              borderTop: active
+                ? "3px solid #8b2635"
+                : "3px solid transparent",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 17,
+                lineHeight: 1,
+                marginBottom: 5,
+              }}
+            >
+              {tab === "Grafik"
+                ? "▦"
+                : tab === "Moje"
+                ? "★"
+                : tab === "Wyjazdy"
+                ? "⌁"
+                : tab === "Zadania"
+                ? "✓"
+                : "•••"}
+            </div>
+
+            {tab}
+          </button>
+        );
+      })}
+    </nav>
+  );
+}
+
+function ModalBackground({ children, close }) {
+  return (
+    <div
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) {
+          close();
+        }
+      }}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(11,25,18,.58)",
+        zIndex: 100,
+        display: "flex",
+        alignItems: "flex-end",
+        justifyContent: "center",
+        padding: 12,
+        boxSizing: "border-box",
+      }}
+    >
+      <div
+        style={{
+          background: "#f7f5ef",
+          width: "100%",
+          maxWidth: 560,
+          maxHeight: "91vh",
+          overflowY: "auto",
+          borderRadius: "24px 24px 18px 18px",
+          padding: 21,
+          boxSizing: "border-box",
+          boxShadow: "0 -10px 40px rgba(0,0,0,.18)",
+        }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function SimplePage({ title, text }) {
+  return (
+    <>
+      <div style={eyebrowStyle}>
+        Centrum Dowodzenia
+      </div>
+
+      <h2 style={{ margin: "4px 0 16px" }}>
+        {title}
+      </h2>
+
+      <div style={cardStyle}>
+        <p
+          style={{
+            margin: 0,
+            color: "#617068",
+            lineHeight: 1.6,
+          }}
+        >
+          {text}
+        </p>
+      </div>
+    </>
+  );
+}
+
+function ParentApp({ logout }) {
+  const [activeTab, setActiveTab] =
+    useState("Moje");
+
+  return (
+    <main style={appStyle}>
+      <AppHeader
+        subtitle="Panel rodzica"
+        logout={logout}
+      />
+
+      <section style={containerPadding}>
+        {activeTab === "Moje" && (
           <>
-            <h2>Więcej</h2>
+            <div style={eyebrowStyle}>
+              Panel rodzica
+            </div>
 
-            <div style={{ display: "grid", gap: 10 }}>
-              {[
-                "Ogłoszenia",
-                "Kadra",
-                "Dokumenty",
-                "Ustawienia",
-              ].map((item) => (
-                <button
-                  key={item}
+            <h2 style={{ margin: "4px 0 16px" }}>
+              Najbliższe wydarzenia
+            </h2>
+
+            <div
+              style={{
+                display: "grid",
+                gap: 12,
+              }}
+            >
+              {PARENT_EVENTS.map((event) => (
+                <div
+                  key={event.id}
                   style={{
                     ...cardStyle,
-                    border: 0,
-                    textAlign: "left",
-                    fontWeight: 800,
-                    fontSize: 16,
-                    cursor: "pointer",
-                    color: "#17231c",
+                    borderLeft:
+                      "5px solid #8b2635",
                   }}
-                  onClick={() =>
-                    alert(
-                      `${item} — moduł podepniemy później.`
-                    )
-                  }
                 >
-                  {item} →
-                </button>
+                  <div style={eyebrowStyle}>
+                    {event.type}
+                  </div>
+
+                  <h3
+                    style={{
+                      margin: "6px 0 9px",
+                    }}
+                  >
+                    {event.title}
+                  </h3>
+
+                  <div
+                    style={{
+                      color: "#526159",
+                      lineHeight: 1.7,
+                    }}
+                  >
+                    📅 {formatDate(event.date)}
+                    <br />
+                    🕐 {event.time}
+                    <br />
+                    📍 {event.location}
+
+                    {event.bring && (
+                      <>
+                        <br />
+                        🎒 {event.bring}
+                      </>
+                    )}
+
+                    {event.cost && (
+                      <>
+                        <br />
+                        💰 {event.cost}
+                        {event.deadline
+                          ? ` • do ${event.deadline}`
+                          : ""}
+                      </>
+                    )}
+                  </div>
+                </div>
               ))}
             </div>
           </>
+        )}
+
+        {activeTab === "Kalendarz" && (
+          <SimplePage
+            title="Kalendarz"
+            text="Tutaj rodzic zobaczy zbiórki, wyjazdy i wydarzenia dotyczące dziecka."
+          />
+        )}
+
+        {activeTab === "Dokumenty" && (
+          <SimplePage
+            title="Dokumenty"
+            text="Tutaj będą zgody, informacje organizacyjne i potrzebne dokumenty."
+          />
         )}
       </section>
 
       <BottomNav
         tabs={[
-          "Grafik",
           "Moje",
-          "Wyjazdy",
-          "Zadania",
-          "Więcej",
+          "Kalendarz",
+          "Dokumenty",
         ]}
         activeTab={activeTab}
         setActiveTab={setActiveTab}
       />
+    </main>
+  );
+}
+
+const appStyle = {
+  margin: 0,
+  minHeight: "100vh",
+  background: "#f2f1eb",
+  color: "#17231c",
+  fontFamily:
+    "Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+  paddingBottom: 90,
+};
+
+const headerStyle = {
+  background:
+    "linear-gradient(135deg, #102c20 0%, #173b2b 100%)",
+  padding: "20px max(18px, calc((100% - 760px) / 2))",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 15,
+  boxShadow: "0 6px 24px rgba(13,39,28,.16)",
+};
+
+const containerPadding = {
+  width: "100%",
+  maxWidth: 760,
+  margin: "0 auto",
+  padding: "22px 16px",
+  boxSizing: "border-box",
+};
+
+const eyebrowStyle = {
+  color: "#8b2635",
+  fontSize: 10,
+  letterSpacing: 1.45,
+  fontWeight: 900,
+  textTransform: "uppercase",
+};
+
+const calendarArrowStyle = {
+  border: "1px solid #dde1dd",
+  background: "#f8f9f7",
+  width: 34,
+  height: 34,
+  borderRadius: 11,
+  cursor: "pointer",
+  color: "#173b2b",
+  fontWeight: 900,
+};
+
+const bottomNavStyle = {
+  position: "fixed",
+  left: 0,
+  right: 0,
+  bottom: 0,
+  zIndex: 50,
+  background: "rgba(255,255,255,.97)",
+  borderTop: "1px solid #dfe3df",
+  boxShadow: "0 -5px 22px rgba(0,0,0,.055)",
+  display: "grid",
+  gridTemplateColumns: "repeat(5, 1fr)",
+  padding:
+    "0 max(4px, calc((100% - 760px) / 2)) env(safe-area-inset-bottom)",
+};
+
+const centerScreen = {
+  minHeight: "100vh",
+  display: "grid",
+  placeItems: "center",
+  background: "#f2f1eb",
+  color: "#173b2b",
+  fontFamily:
+    "Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+};
+
+const loginPageStyle = {
+  minHeight: "100vh",
+  background:
+    "linear-gradient(145deg, #102c20 0%, #173b2b 48%, #1e4a36 100%)",
+  display: "grid",
+  placeItems: "center",
+  padding: 18,
+  boxSizing: "border-box",
+  fontFamily:
+    "Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+};
+
+const loginCardStyle = {
+  width: "100%",
+  maxWidth: 420,
+  background: "#f7f5ef",
+  borderRadius: 26,
+  padding: 25,
+  boxSizing: "border-box",
+  boxShadow: "0 25px 70px rgba(0,0,0,.25)",
+};
