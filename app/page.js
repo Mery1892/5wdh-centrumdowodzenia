@@ -5,7 +5,14 @@ import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+  {
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: true,
+    },
+  }
 );
 
 const FALLBACK_PATROLS = [
@@ -207,6 +214,18 @@ function taskDeadlineLabel(dateString) {
   return `do ${dateString}`;
 }
 
+function approvalStatusLabel(status) {
+  if (status === "pending") return "OCZEKUJE";
+  if (status === "rejected") return "ODRZUCONA";
+  return "ZATWIERDZONA";
+}
+
+function assignmentTypeLabel(type) {
+  if (type === "representation") return "reprezentacja";
+  if (type === "staff") return "kadra";
+  return "uczestnik";
+}
+
 const cardStyle = {
   background: "white",
   borderRadius: 18,
@@ -265,12 +284,17 @@ export default function Home() {
   const [calendarYear, setCalendarYear] = useState(2026);
   const [calendarMonth, setCalendarMonth] = useState(8);
 
-  const [locationFilter, setLocationFilter] = useState("Wszystkie");
+  const [locationFilter, setLocationFilter] = useState("Nora");
 
   const [patrols, setPatrols] = useState([]);
   const [reservations, setReservations] = useState([]);
+  const [showApprovalPanel, setShowApprovalPanel] = useState(false);
 
   const [events, setEvents] = useState([]);
+  const [eventAssignments, setEventAssignments] = useState([]);
+  const [assignmentEditorEvent, setAssignmentEditorEvent] = useState(null);
+  const [assignmentDraft, setAssignmentDraft] = useState({});
+  const [assignmentSaving, setAssignmentSaving] = useState(false);
   const [myPatrolIds, setMyPatrolIds] = useState([]);
 
   const [tasks, setTasks] = useState([]);
@@ -328,6 +352,7 @@ export default function Home() {
     hasPayment: false,
     cost: "",
     paymentDeadline: "",
+    responsiblePersonId: "",
   });
 
   const [modalOpen, setModalOpen] = useState(false);
@@ -362,12 +387,15 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (session && role && role !== "parent") {
-      loadSchedule();
+    if (session && role) {
       loadEvents();
-      loadTasks();
       loadPeople();
       loadAnnouncements();
+
+      if (role !== "parent") {
+        loadSchedule();
+        loadTasks();
+      }
     }
   }, [session, role]);
 
@@ -388,7 +416,7 @@ export default function Home() {
   async function loadRole(userId) {
     const { data, error } = await supabase
       .from("profiles")
-      .select("id,role,full_name,function_title,is_staff")
+      .select("id,role,name,full_name,function_title,is_staff")
       .eq("id", userId)
       .maybeSingle();
 
@@ -424,7 +452,7 @@ export default function Home() {
 
     const { data, error } = await supabase
       .from("profiles")
-      .select("id,role,full_name,function_title,is_staff")
+      .select("id,role,name,full_name,function_title,is_staff")
       .eq("id", session.user.id)
       .maybeSingle();
 
@@ -453,6 +481,7 @@ export default function Home() {
         { data: slotData, error: slotError },
         { data: reservationData, error: reservationError },
         { data: scheduleEventData, error: scheduleEventError },
+        { data: requesterProfiles, error: requesterProfileError },
       ] = await Promise.all([
         supabase.from("patrols").select("id, name, leader_name, leader_id").order("id"),
         supabase
@@ -462,40 +491,71 @@ export default function Home() {
           .order("start_time"),
         supabase
           .from("schedule_reservations")
-          .select("id, slot_id, patrol_id, reserved_by, created_at, reservation_name, reservation_group"),
+          .select("id, slot_id, patrol_id, reserved_by, created_at, reservation_name, reservation_group, approval_status, approved_by, approved_at, rejection_reason, requester_name"),
         supabase
           .from("events")
           .select("id,title,event_date,start_time,end_time,location,created_by"),
+        supabase
+          .from("profiles")
+          .select("id,name,full_name"),
       ]);
 
       if (patrolError) throw patrolError;
       if (slotError) throw slotError;
       if (reservationError) throw reservationError;
       if (scheduleEventError) throw scheduleEventError;
+      if (requesterProfileError) throw requesterProfileError;
 
       const loadedPatrols = patrolData?.length > 0 ? patrolData : FALLBACK_PATROLS;
       setPatrols(loadedPatrols);
 
-      const rawManual = (reservationData || []).map((reservation) => {
-        const slot = (slotData || []).find((item) => Number(item.id) === Number(reservation.slot_id));
-        const patrol = (patrolData || []).find((item) => Number(item.id) === Number(reservation.patrol_id));
-        if (!slot) return null;
-        return {
-          id: reservation.id,
-          slotId: slot.id,
-          patrolId: reservation.patrol_id,
-          reservedBy: reservation.reserved_by,
-          reservationGroup: reservation.reservation_group,
-          date: slot.slot_date,
-          time: normalizeTime(slot.start_time),
-          endTime: normalizeTime(slot.end_time),
-          location: slot.location,
-          notes: slot.notes,
-          patrol: reservation.reservation_name || patrol?.name || "Zastęp",
-          leader: reservation.reservation_name === "Cała drużyna" ? "rezerwacja drużyny" : patrol?.leader_name || "",
-          isEvent: false,
-        };
-      }).filter(Boolean);
+      const rawManual = (reservationData || [])
+        .filter((reservation) => reservation.approval_status !== "rejected")
+        .map((reservation) => {
+          const slot = (slotData || []).find(
+            (item) => Number(item.id) === Number(reservation.slot_id)
+          );
+          const patrol = (patrolData || []).find(
+            (item) => Number(item.id) === Number(reservation.patrol_id)
+          );
+          const requester = (requesterProfiles || []).find(
+            (item) => item.id === reservation.reserved_by
+          );
+
+          if (!slot) return null;
+
+          return {
+            id: reservation.id,
+            slotId: slot.id,
+            patrolId: reservation.patrol_id,
+            reservedBy: reservation.reserved_by,
+            reservationGroup: reservation.reservation_group,
+            approvalStatus: reservation.approval_status || "approved",
+            approvedBy: reservation.approved_by,
+            approvedAt: reservation.approved_at,
+            rejectionReason: reservation.rejection_reason,
+            requesterName:
+              reservation.requester_name ||
+              requester?.full_name ||
+              requester?.name ||
+              "Użytkownik",
+            date: slot.slot_date,
+            time: normalizeTime(slot.start_time),
+            endTime: normalizeTime(slot.end_time),
+            location: slot.location,
+            notes: slot.notes,
+            patrol:
+              reservation.reservation_name ||
+              patrol?.name ||
+              "Zastęp",
+            leader:
+              reservation.reservation_name === "Cała drużyna"
+                ? "rezerwacja drużyny"
+                : patrol?.leader_name || "",
+            isEvent: false,
+          };
+        })
+        .filter(Boolean);
 
       const groupedManual = [];
       const groups = new Map();
@@ -577,11 +637,12 @@ export default function Home() {
       const [
         { data: eventData, error: eventError },
         { data: membershipData },
+        { data: assignmentData, error: assignmentError },
       ] = await Promise.all([
         supabase
           .from("events")
           .select(
-            "id,title,event_type,event_date,start_time,end_time,location,description,created_by,whole_troop,patrol_id,what_to_bring,cost,payment_deadline"
+            "id,title,event_type,event_date,start_time,end_time,location,description,created_by,whole_troop,patrol_id,what_to_bring,cost,payment_deadline,responsible_person_id"
           )
           .order("event_date")
           .order("start_time"),
@@ -590,11 +651,17 @@ export default function Home() {
           .from("patrol_members")
           .select("patrol_id")
           .eq("user_id", session.user.id),
+
+        supabase
+          .from("event_assignments")
+          .select("id,event_id,user_id,assignment_type,note,assigned_by,created_at"),
       ]);
 
       if (eventError) throw eventError;
+      if (assignmentError) throw assignmentError;
 
       setEvents(eventData || []);
+      setEventAssignments(assignmentData || []);
       setMyPatrolIds(
         (membershipData || []).map((item) => Number(item.patrol_id))
       );
@@ -622,6 +689,7 @@ export default function Home() {
       hasPayment: false,
       cost: "",
       paymentDeadline: "",
+      responsiblePersonId: "",
     });
 
     setEventModalOpen(true);
@@ -730,6 +798,8 @@ export default function Home() {
             eventForm.hasPayment && eventForm.paymentDeadline
               ? eventForm.paymentDeadline
               : null,
+          responsible_person_id:
+            eventForm.responsiblePersonId || null,
         })
         .select("id")
         .single();
@@ -777,6 +847,97 @@ export default function Home() {
     }
   }
 
+  function assignmentsForEvent(eventId) {
+    return eventAssignments
+      .filter((item) => Number(item.event_id) === Number(eventId))
+      .map((item) => {
+        const person = people.find((profile) => profile.id === item.user_id);
+
+        return {
+          ...item,
+          personName:
+            person?.full_name ||
+            person?.name ||
+            "Użytkownik",
+        };
+      })
+      .sort((a, b) => a.personName.localeCompare(b.personName, "pl"));
+  }
+
+  function rosterLabel(eventId) {
+    const roster = assignmentsForEvent(eventId);
+
+    if (!roster.length) return "";
+
+    if (roster.every((item) => item.assignment_type === "staff")) {
+      return "WYJAZD KADROWY";
+    }
+
+    if (roster.some((item) => item.assignment_type === "representation")) {
+      return "REPREZENTACJA";
+    }
+
+    return "WYZNACZONY SKŁAD";
+  }
+
+  function openAssignmentEditor(eventItem) {
+    const draft = {};
+
+    assignmentsForEvent(eventItem.id).forEach((item) => {
+      draft[item.user_id] = item.assignment_type;
+    });
+
+    setAssignmentDraft(draft);
+    setAssignmentEditorEvent(eventItem);
+  }
+
+  async function saveAssignmentEditor() {
+    if (!assignmentEditorEvent || !session?.user) return;
+
+    const admin = await verifyAdminAccess();
+
+    if (!admin) {
+      alert("Tylko administrator może wyznaczać skład wyjazdu.");
+      return;
+    }
+
+    setAssignmentSaving(true);
+
+    try {
+      const { error: deleteError } = await supabase
+        .from("event_assignments")
+        .delete()
+        .eq("event_id", assignmentEditorEvent.id);
+
+      if (deleteError) throw deleteError;
+
+      const rows = Object.entries(assignmentDraft)
+        .filter(([, type]) => Boolean(type))
+        .map(([userId, type]) => ({
+          event_id: assignmentEditorEvent.id,
+          user_id: userId,
+          assignment_type: type,
+          assigned_by: session.user.id,
+        }));
+
+      if (rows.length) {
+        const { error: insertError } = await supabase
+          .from("event_assignments")
+          .insert(rows);
+
+        if (insertError) throw insertError;
+      }
+
+      setAssignmentEditorEvent(null);
+      await loadEvents();
+    } catch (error) {
+      console.error("Błąd zapisu składu:", error);
+      alert(`Nie udało się zapisać składu wyjazdu.\n\n${error?.message || ""}`);
+    } finally {
+      setAssignmentSaving(false);
+    }
+  }
+
   async function deleteEvent(eventItem) {
     if (!isAdmin || !eventItem?.id) return;
 
@@ -810,7 +971,7 @@ export default function Home() {
     ] = await Promise.all([
       supabase
         .from("profiles")
-        .select("id,role,full_name,function_title,is_staff,created_at")
+        .select("id,role,name,full_name,function_title,is_staff,created_at")
         .order("full_name"),
       supabase
         .from("patrol_members")
@@ -1291,14 +1452,11 @@ export default function Home() {
     if (!session?.user) return;
 
     const wholeTroop = form.reserver === "whole";
+    const admin = await verifyAdminAccess();
 
-    if (wholeTroop) {
-      const admin = await verifyAdminAccess();
-
-      if (!admin) {
-        alert("Tylko administrator może rezerwować dla całej drużyny.");
-        return;
-      }
+    if (wholeTroop && !admin) {
+      alert("Tylko administrator może rezerwować dla całej drużyny.");
+      return;
     }
 
     const patrol = wholeTroop
@@ -1413,6 +1571,19 @@ export default function Home() {
 
       const groupId = crypto.randomUUID();
       const reservationName = wholeTroop ? "Cała drużyna" : patrol.name;
+      const isOwnPatrolLeader =
+        !wholeTroop &&
+        patrol?.leader_id === session.user.id;
+      const approvalStatus =
+        admin || isOwnPatrolLeader
+          ? "approved"
+          : "pending";
+      const requesterName =
+        currentProfile?.full_name ||
+        currentProfile?.name ||
+        session.user.user_metadata?.full_name ||
+        session.user.email?.split("@")[0] ||
+        "Użytkownik";
 
       const { data: newReservations, error: reservationError } = await supabase
         .from("schedule_reservations")
@@ -1422,6 +1593,10 @@ export default function Home() {
           reserved_by: session.user.id,
           reservation_name: reservationName,
           reservation_group: groupId,
+          approval_status: approvalStatus,
+          approved_by: approvalStatus === "approved" ? session.user.id : null,
+          approved_at: approvalStatus === "approved" ? new Date().toISOString() : null,
+          requester_name: requesterName,
         })))
         .select("id");
 
@@ -1429,6 +1604,11 @@ export default function Home() {
       createdReservationIds.push(...(newReservations || []).map((item) => item.id));
 
       setModalOpen(false);
+
+      if (approvalStatus === "pending") {
+        alert("Rezerwacja została wysłana do zatwierdzenia przez administratora.");
+      }
+
       await loadSchedule();
     } catch (error) {
       console.error("Błąd zapisu:", error);
@@ -1442,6 +1622,89 @@ export default function Home() {
     } finally {
       setSaving(false);
     }
+  }
+
+  async function approveReservation(reservation) {
+    const admin = await verifyAdminAccess();
+
+    if (!admin) {
+      alert("Tylko administrator może zatwierdzać rezerwacje.");
+      return;
+    }
+
+    const ids = reservation.reservationIds || [reservation.id];
+
+    const { error } = await supabase
+      .from("schedule_reservations")
+      .update({
+        approval_status: "approved",
+        approved_by: session.user.id,
+        approved_at: new Date().toISOString(),
+        rejection_reason: null,
+      })
+      .in("id", ids);
+
+    if (error) {
+      alert(`Nie udało się zatwierdzić rezerwacji.\n\n${error.message}`);
+      return;
+    }
+
+    await loadSchedule();
+  }
+
+  async function rejectReservation(reservation) {
+    const admin = await verifyAdminAccess();
+
+    if (!admin) {
+      alert("Tylko administrator może odrzucać rezerwacje.");
+      return;
+    }
+
+    const reason = window.prompt(
+      "Powód odrzucenia rezerwacji:",
+      "Termin lub miejsce wymagają zmiany."
+    );
+
+    if (reason === null) return;
+
+    const ids = reservation.reservationIds || [reservation.id];
+    const slotIds = reservation.slotIds || [];
+
+    const { error: statusError } = await supabase
+      .from("schedule_reservations")
+      .update({
+        approval_status: "rejected",
+        approved_by: session.user.id,
+        approved_at: new Date().toISOString(),
+        rejection_reason: reason.trim() || "Rezerwacja odrzucona przez administratora.",
+      })
+      .in("id", ids);
+
+    if (statusError) {
+      alert(`Nie udało się odrzucić rezerwacji.\n\n${statusError.message}`);
+      return;
+    }
+
+    // Audit zapisuje status "rejected", a następnie zwalniamy termin.
+    const { error: deleteError } = await supabase
+      .from("schedule_reservations")
+      .delete()
+      .in("id", ids);
+
+    if (deleteError) {
+      alert(`Status zmieniono, ale nie udało się zwolnić terminu.\n\n${deleteError.message}`);
+      await loadSchedule();
+      return;
+    }
+
+    if (slotIds.length) {
+      await supabase
+        .from("schedule_slots")
+        .delete()
+        .in("id", slotIds);
+    }
+
+    await loadSchedule();
   }
 
   async function removeReservation(reservation) {
@@ -1513,7 +1776,14 @@ export default function Home() {
   }
 
   if (role === "parent") {
-    return <ParentApp logout={logout} />;
+    return (
+      <ParentApp
+        logout={logout}
+        events={events}
+        eventAssignments={eventAssignments}
+        people={people}
+      />
+    );
   }
 
   const dayReservations = reservations
@@ -1561,6 +1831,16 @@ export default function Home() {
       item.reservedBy === session.user.id &&
       item.date >= today
   );
+
+  const pendingReservations = reservations
+    .filter(
+      (item) =>
+        !item.isEvent &&
+        item.approvalStatus === "pending"
+    )
+    .sort((a, b) =>
+      `${a.date}T${a.time}`.localeCompare(`${b.date}T${b.time}`)
+    );
 
   const visibleAnnouncements = announcements
     .filter((item) => {
@@ -1673,13 +1953,120 @@ export default function Home() {
                 </h2>
               </div>
 
-              <button
-                style={primaryStyle}
-                onClick={() => openReservation()}
+              <div
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  flexWrap: "wrap",
+                }}
               >
-                + Rezerwacja
-              </button>
+                {isAdmin && (
+                  <button
+                    style={{
+                      ...secondaryStyle,
+                      borderColor:
+                        pendingReservations.length > 0
+                          ? "#b98a2f"
+                          : "#d6dbd6",
+                    }}
+                    onClick={() =>
+                      setShowApprovalPanel(!showApprovalPanel)
+                    }
+                  >
+                    Do akceptacji ({pendingReservations.length})
+                  </button>
+                )}
+
+                <button
+                  style={primaryStyle}
+                  onClick={() => openReservation()}
+                >
+                  + Rezerwacja
+                </button>
+              </div>
             </div>
+
+            {isAdmin && showApprovalPanel && (
+              <div
+                style={{
+                  ...cardStyle,
+                  marginBottom: 16,
+                  border: "1px solid #ead8a7",
+                  background: "#fffaf0",
+                }}
+              >
+                <div style={eyebrowStyle}>ADMIN</div>
+                <h3 style={{ margin: "5px 0 12px" }}>
+                  Rezerwacje do akceptacji
+                </h3>
+
+                {pendingReservations.length === 0 ? (
+                  <div style={{ color: "#6a746e" }}>
+                    Wszystko zatwierdzone — brak oczekujących rezerwacji.
+                  </div>
+                ) : (
+                  <div style={{ display: "grid", gap: 9 }}>
+                    {pendingReservations.map((reservation) => (
+                      <div
+                        key={`pending-${reservation.id}`}
+                        style={{
+                          background: "white",
+                          borderRadius: 14,
+                          padding: 13,
+                          border: "1px solid #e8dfc9",
+                        }}
+                      >
+                        <strong>{reservation.patrol}</strong>
+
+                        <div
+                          style={{
+                            color: "#66726b",
+                            fontSize: 13,
+                            lineHeight: 1.6,
+                            marginTop: 5,
+                          }}
+                        >
+                          👤 {reservation.requesterName}
+                          <br />
+                          📅 {formatDate(reservation.date)}
+                          <br />
+                          🕐 {reservation.time}–{reservation.endTime}
+                          <br />
+                          📍 {reservation.location}
+                        </div>
+
+                        <div
+                          style={{
+                            display: "grid",
+                            gridTemplateColumns: "1fr 1fr",
+                            gap: 8,
+                            marginTop: 10,
+                          }}
+                        >
+                          <button
+                            style={secondaryStyle}
+                            onClick={() =>
+                              rejectReservation(reservation)
+                            }
+                          >
+                            Odrzuć
+                          </button>
+
+                          <button
+                            style={primaryStyle}
+                            onClick={() =>
+                              approveReservation(reservation)
+                            }
+                          >
+                            Zatwierdź
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             <div
               style={{
@@ -1740,7 +2127,6 @@ export default function Home() {
               }}
             >
               {[
-                "Wszystkie",
                 "Nora",
                 "Basecamp",
                 "Inne",
@@ -1828,6 +2214,8 @@ export default function Home() {
                     border: 0,
                     borderLeft: reservation.isEvent
                       ? "5px solid #607b54"
+                      : reservation.approvalStatus === "pending"
+                      ? "5px solid #b98a2f"
                       : "5px solid #8b2635",
                     textAlign: "left",
                     display: "grid",
@@ -1864,8 +2252,11 @@ export default function Home() {
                     >
                       {reservation.isEvent
                         ? "wydarzenie"
-                        : reservation.leader ||
-                          "lider zastępu"}
+                        : `Rezerwuje: ${reservation.requesterName}${
+                            reservation.leader
+                              ? ` • ${reservation.leader}`
+                              : ""
+                          }`}
                     </div>
                   </div>
 
@@ -1879,94 +2270,133 @@ export default function Home() {
                     }}
                   >
                     {reservation.location}
+                    {!reservation.isEvent &&
+                      reservation.approvalStatus === "pending"
+                      ? " • oczekuje"
+                      : ""}
                   </span>
                 </button>
               ))}
             </div>
             <h3 style={{ margin: "26px 0 10px" }}>
-              Wolne terminy
+              Wolne terminy — {locationFilter}
             </h3>
 
             <div style={{ display: "grid", gap: 8 }}>
               {locationFilter !== "Inne" &&
-                validTimes.flatMap((time) => {
-                  const locations =
-                    locationFilter === "Wszystkie"
-                      ? MAIN_LOCATIONS
-                      : [locationFilter];
+                validTimes.map((time) => {
+                  const location = locationFilter;
 
-                  return locations.map((location) => {
-                    const occupied = reservations.some(
-                      (item) =>
-                        item.date === selectedDate &&
-                        item.location === location &&
-                        time >= item.time &&
-                        time < item.endTime
-                    );
+                  const occupied = reservations.some(
+                    (item) =>
+                      item.date === selectedDate &&
+                      item.location === location &&
+                      item.approvalStatus !== "rejected" &&
+                      time >= item.time &&
+                      time < item.endTime
+                  );
 
-                    if (occupied) return null;
+                  if (occupied) return null;
 
-                    return (
-                      <div
-                        key={`${time}-${location}`}
-                        style={{
-                          border: "2px dashed #ccd2cd",
-                          borderRadius: 16,
-                          padding: 14,
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "space-between",
-                          gap: 10,
-                        }}
-                      >
-                        <div>
-                          <strong>
-                            {time}–{addMinutes(time, 30)}
-                          </strong>
+                  return (
+                    <div
+                      key={`${time}-${location}`}
+                      style={{
+                        border: "2px dashed #ccd2cd",
+                        borderRadius: 16,
+                        padding: 14,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 10,
+                      }}
+                    >
+                      <div>
+                        <strong>
+                          {time}–{addMinutes(time, 30)}
+                        </strong>
 
-                          <div
-                            style={{
-                              fontSize: 13,
-                              color: "#6c756f",
-                              marginTop: 3,
-                            }}
-                          >
-                            {location} • wolne
-                          </div>
-                        </div>
-
-                        <button
-                          style={secondaryStyle}
-                          onClick={() =>
-                            openReservation(time, location)
-                          }
+                        <div
+                          style={{
+                            fontSize: 13,
+                            color: "#6c756f",
+                            marginTop: 3,
+                          }}
                         >
-                          Zarezerwuj
-                        </button>
+                          {location} • wolne
+                        </div>
                       </div>
-                    );
-                  });
+
+                      <button
+                        style={secondaryStyle}
+                        onClick={() =>
+                          openReservation(time, location)
+                        }
+                      >
+                        Zarezerwuj
+                      </button>
+                    </div>
+                  );
                 })}
 
-              <button
-                onClick={() =>
-                  openReservation(
-                    validTimes[0] || "17:30",
-                    "Inne miejsce"
-                  )
-                }
-                style={{
-                  border: "2px dashed #b98a2f",
-                  borderRadius: 16,
-                  padding: 15,
-                  background: "#fffdf7",
-                  color: "#72571e",
-                  cursor: "pointer",
-                  fontWeight: 800,
-                }}
-              >
-                + Zarezerwuj inne miejsce
-              </button>
+              {locationFilter === "Inne" && (
+                <>
+                  <div
+                    style={{
+                      ...cardStyle,
+                      boxShadow: "none",
+                      background: "#fffaf0",
+                      border: "1px solid #ead8a7",
+                      color: "#6f5722",
+                      lineHeight: 1.55,
+                    }}
+                  >
+                    Tutaj wybierasz godzinę, a konkretne miejsce wpisujesz
+                    podczas rezerwacji — np. Olszynki, Orlik albo las.
+                  </div>
+
+                  {validTimes.map((time) => (
+                    <div
+                      key={`other-${time}`}
+                      style={{
+                        border: "2px dashed #b98a2f",
+                        borderRadius: 16,
+                        padding: 14,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 10,
+                        background: "#fffdf7",
+                      }}
+                    >
+                      <div>
+                        <strong>
+                          {time}–{addMinutes(time, 30)}
+                        </strong>
+
+                        <div
+                          style={{
+                            fontSize: 13,
+                            color: "#72571e",
+                            marginTop: 3,
+                          }}
+                        >
+                          inne miejsce
+                        </div>
+                      </div>
+
+                      <button
+                        style={secondaryStyle}
+                        onClick={() =>
+                          openReservation(time, "Inne miejsce")
+                        }
+                      >
+                        Wybierz miejsce
+                      </button>
+                    </div>
+                  ))}
+                </>
+              )}
             </div>
           </>
         )}
@@ -2407,6 +2837,26 @@ export default function Home() {
                               ? "CAŁA DRUŻYNA"
                               : patrol?.name || "ZASTĘP"}
                           </div>
+
+                          {rosterLabel(trip.id) && (
+                            <div
+                              style={{
+                                display: "inline-block",
+                                marginTop: 7,
+                                background:
+                                  rosterLabel(trip.id) === "WYJAZD KADROWY"
+                                    ? "#173b2b"
+                                    : "#8b2635",
+                                color: "white",
+                                borderRadius: 20,
+                                padding: "5px 9px",
+                                fontSize: 10,
+                                fontWeight: 900,
+                              }}
+                            >
+                              {rosterLabel(trip.id)}
+                            </div>
+                          )}
 
                           <h3
                             style={{
@@ -3781,6 +4231,37 @@ export default function Home() {
             </label>
 
             <label>
+              <strong>Osoba odpowiedzialna</strong>
+
+              <select
+                value={eventForm.responsiblePersonId}
+                onChange={(event) =>
+                  setEventForm({
+                    ...eventForm,
+                    responsiblePersonId: event.target.value,
+                  })
+                }
+                style={inputStyle}
+              >
+                <option value="">Nie wybrano</option>
+
+                {people
+                  .filter(
+                    (person) =>
+                      normalizeRole(person.role) !== "parent"
+                  )
+                  .map((person) => (
+                    <option
+                      key={person.id}
+                      value={person.id}
+                    >
+                      {person.full_name || person.name || "Użytkownik"}
+                    </option>
+                  ))}
+              </select>
+            </label>
+
+            <label>
               <strong>Co zabrać?</strong>
 
               <textarea
@@ -3943,6 +4424,145 @@ export default function Home() {
         </ModalBackground>
       )}
 
+      {assignmentEditorEvent && (
+        <ModalBackground
+          close={() =>
+            !assignmentSaving &&
+            setAssignmentEditorEvent(null)
+          }
+        >
+          <div style={eyebrowStyle}>Panel administratora</div>
+
+          <h2 style={{ marginTop: 5 }}>
+            Skład: {assignmentEditorEvent.title}
+          </h2>
+
+          <p
+            style={{
+              color: "#68736d",
+              lineHeight: 1.55,
+            }}
+          >
+            Zaznacz osoby jadące i określ, czy jadą jako uczestnicy,
+            reprezentacja drużyny czy kadra.
+          </p>
+
+          <div
+            style={{
+              display: "grid",
+              gap: 9,
+              maxHeight: "52vh",
+              overflowY: "auto",
+              paddingRight: 3,
+            }}
+          >
+            {people
+              .filter(
+                (person) =>
+                  normalizeRole(person.role) !== "parent"
+              )
+              .map((person) => {
+                const selectedType =
+                  assignmentDraft[person.id] || "";
+
+                return (
+                  <div
+                    key={`assign-${person.id}`}
+                    style={{
+                      ...cardStyle,
+                      boxShadow: "none",
+                      border: selectedType
+                        ? "1px solid #9fb2a5"
+                        : "1px solid #e1e5e1",
+                      padding: 12,
+                    }}
+                  >
+                    <label
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
+                        cursor: "pointer",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={Boolean(selectedType)}
+                        onChange={(event) =>
+                          setAssignmentDraft((old) => ({
+                            ...old,
+                            [person.id]: event.target.checked
+                              ? old[person.id] || "participant"
+                              : "",
+                          }))
+                        }
+                      />
+
+                      <strong>
+                        {person.full_name ||
+                          person.name ||
+                          "Użytkownik"}
+                      </strong>
+                    </label>
+
+                    {selectedType && (
+                      <select
+                        value={selectedType}
+                        onChange={(event) =>
+                          setAssignmentDraft((old) => ({
+                            ...old,
+                            [person.id]: event.target.value,
+                          }))
+                        }
+                        style={inputStyle}
+                      >
+                        <option value="participant">
+                          Uczestnik
+                        </option>
+                        <option value="representation">
+                          Reprezentacja
+                        </option>
+                        <option value="staff">
+                          Kadra
+                        </option>
+                      </select>
+                    )}
+                  </div>
+                );
+              })}
+          </div>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: 9,
+              marginTop: 16,
+            }}
+          >
+            <button
+              style={secondaryStyle}
+              disabled={assignmentSaving}
+              onClick={() =>
+                setAssignmentEditorEvent(null)
+              }
+            >
+              Anuluj
+            </button>
+
+            <button
+              style={primaryStyle}
+              disabled={assignmentSaving}
+              onClick={saveAssignmentEditor}
+            >
+              {assignmentSaving
+                ? "Zapisuję..."
+                : "Zapisz skład"}
+            </button>
+          </div>
+        </ModalBackground>
+      )}
+
       {eventDetails && (
         <ModalBackground
           close={() => setEventDetails(null)}
@@ -3997,6 +4617,74 @@ export default function Home() {
 
             📍 {eventDetails.location}
           </div>
+
+          {eventDetails.responsible_person_id && (
+            <div
+              style={{
+                ...cardStyle,
+                boxShadow: "none",
+                marginTop: 12,
+              }}
+            >
+              <strong>🧭 Osoba odpowiedzialna</strong>
+
+              <div style={{ marginTop: 7, color: "#526159" }}>
+                {people.find(
+                  (person) =>
+                    person.id === eventDetails.responsible_person_id
+                )?.full_name ||
+                  people.find(
+                    (person) =>
+                      person.id === eventDetails.responsible_person_id
+                  )?.name ||
+                  "Wyznaczona osoba"}
+              </div>
+            </div>
+          )}
+
+          {isTripType(eventDetails.event_type) &&
+            assignmentsForEvent(eventDetails.id).length > 0 && (
+              <div
+                style={{
+                  ...cardStyle,
+                  boxShadow: "none",
+                  background: "#f7f5ee",
+                  marginTop: 12,
+                }}
+              >
+                <div style={eyebrowStyle}>
+                  {rosterLabel(eventDetails.id) || "SKŁAD WYJAZDU"}
+                </div>
+
+                <h3 style={{ margin: "6px 0 10px" }}>
+                  Kto jedzie?
+                </h3>
+
+                <div style={{ display: "grid", gap: 7 }}>
+                  {assignmentsForEvent(eventDetails.id).map((item) => (
+                    <div
+                      key={`roster-${item.id}`}
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        gap: 10,
+                      }}
+                    >
+                      <strong>{item.personName}</strong>
+                      <span
+                        style={{
+                          color: "#68736d",
+                          fontSize: 12,
+                          fontWeight: 800,
+                        }}
+                      >
+                        {assignmentTypeLabel(item.assignment_type)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
           {eventDetails.description && (
             <div
@@ -4094,7 +4782,11 @@ export default function Home() {
             style={{
               display: "grid",
               gridTemplateColumns:
-                isAdmin ? "1fr 1fr" : "1fr",
+                isAdmin && isTripType(eventDetails.event_type)
+                  ? "1fr 1fr"
+                  : isAdmin
+                  ? "1fr 1fr"
+                  : "1fr",
               gap: 9,
               marginTop: 18,
             }}
@@ -4106,9 +4798,37 @@ export default function Home() {
               Zamknij
             </button>
 
-            {isAdmin && (
+            {isAdmin && isTripType(eventDetails.event_type) && (
               <button
                 style={primaryStyle}
+                onClick={() => {
+                  setEventDetails(null);
+                  openAssignmentEditor(eventDetails);
+                }}
+              >
+                Wyznacz skład
+              </button>
+            )}
+
+            {isAdmin && !isTripType(eventDetails.event_type) && (
+              <button
+                style={primaryStyle}
+                onClick={() =>
+                  deleteEvent(eventDetails)
+                }
+              >
+                Usuń wydarzenie
+              </button>
+            )}
+
+            {isAdmin && isTripType(eventDetails.event_type) && (
+              <button
+                style={{
+                  ...secondaryStyle,
+                  color: "#8b2635",
+                  borderColor: "#dfc1c5",
+                  gridColumn: "1 / -1",
+                }}
                 onClick={() =>
                   deleteEvent(eventDetails)
                 }
@@ -4141,7 +4861,7 @@ export default function Home() {
 
           <div style={{ display: "grid", gap: 15 }}>
             <label>
-              <strong>Kto rezerwuje?</strong>
+              <strong>Dla którego zastępu?</strong>
               <select
                 value={form.reserver}
                 onChange={(event) =>
@@ -4167,8 +4887,16 @@ export default function Home() {
                 }}
               >
                 {isAdmin
-                  ? "Jako admin możesz rezerwować dla całej drużyny albo dowolnego zastępu."
-                  : "„Cała drużyna” wymaga potwierdzenia uprawnień administratora. Pozostali rezerwują jako zastęp."}
+                  ? `Rezerwujesz jako: ${
+                      currentProfile?.full_name ||
+                      currentProfile?.name ||
+                      "administrator"
+                    }. Rezerwacja zostanie zatwierdzona od razu.`
+                  : `Rezerwujesz jako: ${
+                      currentProfile?.full_name ||
+                      currentProfile?.name ||
+                      "użytkownik"
+                    }. Lider własnego zastępu nie potrzebuje akceptacji; pozostałe rezerwacje zatwierdza admin.`}
               </div>
             </label>
 
@@ -4286,9 +5014,11 @@ export default function Home() {
             <br />
             📍 {detailsOpen.location}
             <br />
-            👤{" "}
-            {detailsOpen.leader ||
-              "lider zastępu"}
+            👤 Rezerwuje: {detailsOpen.requesterName || "Użytkownik"}
+            <br />
+            ⚜️ {detailsOpen.leader || detailsOpen.patrol}
+            <br />
+            Status: {approvalStatusLabel(detailsOpen.approvalStatus)}
           </p>
 
           <div
@@ -4500,8 +5230,49 @@ function LoginScreen({
   );
 }
 
-function ParentApp({ logout }) {
+function ParentApp({
+  logout,
+  events = [],
+  eventAssignments = [],
+  people = [],
+}) {
   const [tab, setTab] = useState("Moje");
+  const today = dateToString(new Date());
+
+  const trips = events
+    .filter(
+      (event) =>
+        isTripType(event.event_type) &&
+        event.event_date >= today
+    )
+    .sort((a, b) =>
+      `${a.event_date}T${normalizeTime(a.start_time)}`.localeCompare(
+        `${b.event_date}T${normalizeTime(b.start_time)}`
+      )
+    );
+
+  function parentRoster(eventId) {
+    return eventAssignments
+      .filter(
+        (item) => Number(item.event_id) === Number(eventId)
+      )
+      .map((item) => {
+        const person = people.find(
+          (profile) => profile.id === item.user_id
+        );
+
+        return {
+          ...item,
+          personName:
+            person?.full_name ||
+            person?.name ||
+            "Użytkownik",
+        };
+      })
+      .sort((a, b) =>
+        a.personName.localeCompare(b.personName, "pl")
+      );
+  }
 
   return (
     <main style={appStyle}>
@@ -4518,50 +5289,132 @@ function ParentApp({ logout }) {
             </div>
 
             <h2 style={{ marginTop: 5 }}>
-              Co, kiedy i gdzie?
+              Wyjazdy i reprezentacje
             </h2>
 
-            <div style={{ display: "grid", gap: 12 }}>
-              {PARENT_EVENTS.map((event) => (
-                <div
-                  key={event.id}
-                  style={{
-                    ...cardStyle,
-                    borderLeft: "5px solid #8b2635",
-                  }}
-                >
-                  <div style={eyebrowStyle}>
-                    {event.type}
-                  </div>
+            {trips.length === 0 ? (
+              <div
+                style={{
+                  ...cardStyle,
+                  color: "#68736d",
+                }}
+              >
+                Brak nadchodzących wyjazdów.
+              </div>
+            ) : (
+              <div style={{ display: "grid", gap: 12 }}>
+                {trips.map((event) => {
+                  const roster = parentRoster(event.id);
+                  const staffOnly =
+                    roster.length > 0 &&
+                    roster.every(
+                      (item) =>
+                        item.assignment_type === "staff"
+                    );
+                  const representation = roster.some(
+                    (item) =>
+                      item.assignment_type === "representation"
+                  );
 
-                  <h3>{event.title}</h3>
+                  return (
+                    <div
+                      key={event.id}
+                      style={{
+                        ...cardStyle,
+                        borderLeft: staffOnly
+                          ? "5px solid #173b2b"
+                          : representation
+                          ? "5px solid #8b2635"
+                          : "5px solid #607b54",
+                      }}
+                    >
+                      <div style={eyebrowStyle}>
+                        {staffOnly
+                          ? "WYJAZD KADROWY"
+                          : representation
+                          ? "REPREZENTACJA"
+                          : eventTypeLabel(
+                              event.event_type
+                            ).toUpperCase()}
+                      </div>
 
-                  <div style={{ lineHeight: 1.7 }}>
-                    📅 {formatDate(event.date)}
-                    <br />
-                    🕐 {event.time}
-                    <br />
-                    📍 {event.location}
-                    <br />
-                    🎒 {event.bring}
+                      <h3>{event.title}</h3>
 
-                    {event.cost && (
-                      <>
+                      <div style={{ lineHeight: 1.7 }}>
+                        📅 {formatDate(event.event_date)}
                         <br />
-                        💰 {event.cost}
-                      </>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
+                        🕐 {normalizeTime(event.start_time)}
+                        {event.end_time
+                          ? `–${normalizeTime(
+                              event.end_time
+                            )}`
+                          : ""}
+                        <br />
+                        📍 {event.location}
+
+                        {event.cost && (
+                          <>
+                            <br />
+                            💰 {event.cost}
+                          </>
+                        )}
+                      </div>
+
+                      {roster.length > 0 && (
+                        <div
+                          style={{
+                            marginTop: 13,
+                            paddingTop: 12,
+                            borderTop: "1px solid #e3e6e3",
+                          }}
+                        >
+                          <strong>Kto jedzie?</strong>
+
+                          <div
+                            style={{
+                              display: "grid",
+                              gap: 6,
+                              marginTop: 8,
+                            }}
+                          >
+                            {roster.map((item) => (
+                              <div
+                                key={item.id}
+                                style={{
+                                  display: "flex",
+                                  justifyContent:
+                                    "space-between",
+                                  gap: 10,
+                                  fontSize: 13,
+                                }}
+                              >
+                                <span>{item.personName}</span>
+                                <strong
+                                  style={{
+                                    color: "#66726b",
+                                  }}
+                                >
+                                  {assignmentTypeLabel(
+                                    item.assignment_type
+                                  )}
+                                </strong>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </>
         )}
 
         {tab === "Kalendarz" && (
           <SimplePage
             title="Kalendarz"
-            text="Tutaj będą wydarzenia przypisane do dziecka i jego zastępu."
+            text="Tu będą wydarzenia i terminy ważne dla dziecka."
           />
         )}
 
