@@ -392,6 +392,7 @@ export default function Home() {
     dueDate: "",
     audience: "whole",
     patrolId: "",
+    targetUserId: "",
   });
 
   const [eventModalOpen, setEventModalOpen] = useState(false);
@@ -1126,6 +1127,45 @@ export default function Home() {
     if (status === "rejected") return "ODRZUCONY";
     if (status === "withdrawn") return "WYCOFANY";
     return "OCZEKUJE";
+  }
+
+  async function setEventSignupOpen(eventItem, isOpen) {
+    const admin = await verifyAdminAccess();
+
+    if (!admin) return;
+
+    setSignupSavingId(eventItem.id);
+
+    try {
+      const { error } = await supabase
+        .from("events")
+        .update({
+          signup_enabled: Boolean(isOpen),
+        })
+        .eq("id", eventItem.id);
+
+      if (error) throw error;
+
+      setEventDetails((current) =>
+        current && current.id === eventItem.id
+          ? {
+              ...current,
+              signup_enabled: Boolean(isOpen),
+            }
+          : current
+      );
+
+      await loadEvents();
+    } catch (error) {
+      console.error("Błąd zmiany statusu zgłoszeń:", error);
+      alert(
+        `Nie udało się zmienić statusu zgłoszeń.\n\n${
+          error?.message || ""
+        }`
+      );
+    } finally {
+      setSignupSavingId(null);
+    }
   }
 
   async function submitEventSignup(eventItem) {
@@ -2078,9 +2118,33 @@ export default function Home() {
     }
   }
 
-  function targetUsersForAudience(audience, patrolId) {
+  function targetUsersForAudience(
+    audience,
+    patrolId,
+    targetUserId = ""
+  ) {
     if (audience === "whole") {
-      return people.map((person) => person.id);
+      return people
+        .filter(
+          (person) =>
+            normalizeRole(person.role) !== "parent"
+        )
+        .map((person) => person.id);
+    }
+
+    if (audience === "user") {
+      return targetUserId ? [targetUserId] : [];
+    }
+
+    if (audience === "staff") {
+      return people
+        .filter(
+          (person) =>
+            person.is_staff ||
+            Boolean(person.function_title?.trim()) ||
+            isAdminRole(person.role)
+        )
+        .map((person) => person.id);
     }
 
     const memberIds = memberships
@@ -2419,7 +2483,7 @@ export default function Home() {
     const { data, error } = await supabase
       .from("tasks")
       .select(
-        "id,title,description,due_date,status,whole_troop,patrol_id,created_by,created_at"
+        "id,title,description,due_date,status,whole_troop,patrol_id,target_user_id,staff_only,created_by,created_at"
       )
       .order("status")
       .order("due_date", { ascending: true, nullsFirst: false })
@@ -2440,6 +2504,7 @@ export default function Home() {
       dueDate: "",
       audience: "whole",
       patrolId: patrols[0]?.id ? String(patrols[0].id) : "",
+      targetUserId: "",
     });
 
     setTaskModalOpen(true);
@@ -2463,6 +2528,11 @@ export default function Home() {
       return;
     }
 
+    if (taskForm.audience === "user" && !taskForm.targetUserId) {
+      alert("Wybierz konkretną osobę.");
+      return;
+    }
+
     setTaskSaving(true);
 
     try {
@@ -2478,6 +2548,11 @@ export default function Home() {
             taskForm.audience === "patrol"
               ? Number(taskForm.patrolId)
               : null,
+          target_user_id:
+            taskForm.audience === "user"
+              ? taskForm.targetUserId
+              : null,
+          staff_only: taskForm.audience === "staff",
           created_by: session.user.id,
         })
         .select("id")
@@ -2493,7 +2568,8 @@ export default function Home() {
           : taskForm.description.trim() || "Nowe zadanie drużyny.",
         target_user_ids: targetUsersForAudience(
           taskForm.audience,
-          taskForm.patrolId
+          taskForm.patrolId,
+          taskForm.targetUserId
         ),
         link: `/?view=zadania&task=${createdTask.id}`,
       });
@@ -3194,6 +3270,22 @@ export default function Home() {
     .filter((task) => {
       if (isAdmin) return true;
       if (task.whole_troop) return true;
+
+      if (
+        task.target_user_id &&
+        task.target_user_id === session.user.id
+      ) {
+        return true;
+      }
+
+      if (task.staff_only) {
+        return Boolean(
+          currentProfile?.is_staff ||
+            currentProfile?.function_title?.trim() ||
+            isAdminRole(currentProfile?.role)
+        );
+      }
+
       return myPatrolIds.includes(Number(task.patrol_id));
     })
     .sort((a, b) => {
@@ -4065,19 +4157,41 @@ export default function Home() {
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+                gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
                 gap: 9,
                 marginBottom: 18,
               }}
             >
-              <MiniStat value={upcomingTrips.length} label="nadchodzące" />
               <MiniStat
-                value={upcomingTrips.filter((item) => item.cost).length}
-                label="płatne"
+                value={upcomingTrips.length}
+                label="nadchodzące"
               />
+
               <MiniStat
-                value={upcomingTrips.filter((item) => item.what_to_bring).length}
-                label="z listą rzeczy"
+                value={
+                  upcomingTrips.filter(
+                    (item) => item.event_type === "biwak"
+                  ).length
+                }
+                label="biwaki"
+              />
+
+              <MiniStat
+                value={
+                  upcomingTrips.filter(
+                    (item) => item.event_type === "rajd"
+                  ).length
+                }
+                label="rajdy"
+              />
+
+              <MiniStat
+                value={
+                  upcomingTrips.filter(
+                    (item) => item.event_type === "zawody"
+                  ).length
+                }
+                label="zawody"
               />
             </div>
 
@@ -4423,6 +4537,20 @@ export default function Home() {
                           <div style={eyebrowStyle}>
                             {task.whole_troop
                               ? "CAŁA DRUŻYNA"
+                              : task.staff_only
+                              ? "KADRA"
+                              : task.target_user_id
+                              ? `OSOBA: ${
+                                  people.find(
+                                    (person) =>
+                                      person.id === task.target_user_id
+                                  )?.full_name ||
+                                  people.find(
+                                    (person) =>
+                                      person.id === task.target_user_id
+                                  )?.name ||
+                                  "Użytkownik"
+                                }`
                               : patrol?.name || "ZASTĘP"}
                           </div>
 
@@ -6719,6 +6847,8 @@ export default function Home() {
               >
                 <option value="whole">Cała drużyna</option>
                 <option value="patrol">Konkretny zastęp</option>
+                <option value="staff">Kadra</option>
+                <option value="user">Konkretna osoba</option>
               </select>
             </label>
 
@@ -6743,6 +6873,57 @@ export default function Home() {
                       {patrol.name} — {patrol.leader_name}
                     </option>
                   ))}
+                </select>
+              </label>
+            )}
+
+            {taskForm.audience === "staff" && (
+              <div
+                style={{
+                  ...cardStyle,
+                  boxShadow: "none",
+                  background: "#f1f7f2",
+                  color: "#536159",
+                }}
+              >
+                Zadanie zobaczy cała kadra: osoby oznaczone jako kadra
+                oraz osoby z przypisaną funkcją.
+              </div>
+            )}
+
+            {taskForm.audience === "user" && (
+              <label>
+                <strong>Osoba</strong>
+                <select
+                  value={taskForm.targetUserId}
+                  onChange={(event) =>
+                    setTaskForm({
+                      ...taskForm,
+                      targetUserId: event.target.value,
+                    })
+                  }
+                  style={inputStyle}
+                >
+                  <option value="">Wybierz osobę</option>
+
+                  {people
+                    .filter(
+                      (person) =>
+                        normalizeRole(person.role) !== "parent"
+                    )
+                    .sort((a, b) =>
+                      (a.full_name || a.name || "").localeCompare(
+                        b.full_name || b.name || "",
+                        "pl"
+                      )
+                    )
+                    .map((person) => (
+                      <option key={person.id} value={person.id}>
+                        {person.full_name ||
+                          person.name ||
+                          "Użytkownik"}
+                      </option>
+                    ))}
                 </select>
               </label>
             )}
@@ -7760,8 +7941,7 @@ export default function Home() {
               </div>
             )}
 
-          {isTripType(eventDetails.event_type) &&
-            eventDetails.signup_enabled && (
+          {isTripType(eventDetails.event_type) && (
               <div
                 style={{
                   ...cardStyle,
@@ -7772,6 +7952,71 @@ export default function Home() {
                 }}
               >
                 <div style={eyebrowStyle}>ZGŁOSZENIA NA WYJAZD</div>
+
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: 10,
+                    flexWrap: "wrap",
+                    marginTop: 8,
+                  }}
+                >
+                  <strong
+                    style={{
+                      color: eventDetails.signup_enabled
+                        ? "#315d3e"
+                        : "#8b2635",
+                    }}
+                  >
+                    {eventDetails.signup_enabled
+                      ? "● ZGŁOSZENIA OTWARTE"
+                      : "● ZGŁOSZENIA ZAMKNIĘTE"}
+                  </strong>
+
+                  {isAdmin && (
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: 7,
+                        flexWrap: "wrap",
+                      }}
+                    >
+                      <button
+                        style={
+                          eventDetails.signup_enabled
+                            ? secondaryStyle
+                            : primaryStyle
+                        }
+                        disabled={
+                          signupSavingId === eventDetails.id
+                        }
+                        onClick={() =>
+                          setEventSignupOpen(eventDetails, true)
+                        }
+                      >
+                        Otwórz
+                      </button>
+
+                      <button
+                        style={
+                          !eventDetails.signup_enabled
+                            ? secondaryStyle
+                            : primaryStyle
+                        }
+                        disabled={
+                          signupSavingId === eventDetails.id
+                        }
+                        onClick={() =>
+                          setEventSignupOpen(eventDetails, false)
+                        }
+                      >
+                        Zamknij
+                      </button>
+                    </div>
+                  )}
+                </div>
 
                 <div
                   style={{
@@ -7830,7 +8075,20 @@ export default function Home() {
 
                 {!isAdmin && (
                   <>
-                    {mySignupForEvent(eventDetails.id) ? (
+                    {!eventDetails.signup_enabled ? (
+                      <div
+                        style={{
+                          background: "#fff4f4",
+                          border: "1px solid #e6c9cd",
+                          borderRadius: 12,
+                          padding: 10,
+                          color: "#8b2635",
+                          fontWeight: 800,
+                        }}
+                      >
+                        Zgłoszenia są obecnie zamknięte.
+                      </div>
+                    ) : mySignupForEvent(eventDetails.id) ? (
                       <div>
                         <div
                           style={{
