@@ -1,4 +1,5 @@
-export default function Home() {"use client";
+"use client";
+export default function Home() {
   const rezerwacje = [
     {
       godzina: "17:30–18:00",
