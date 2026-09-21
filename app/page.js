@@ -323,6 +323,12 @@ export default function Home() {
   const [events, setEvents] = useState([]);
   const [eventAssignments, setEventAssignments] = useState([]);
   const [eventSignups, setEventSignups] = useState([]);
+  const [eventAnnouncements, setEventAnnouncements] = useState([]);
+  const [eventMessages, setEventMessages] = useState([]);
+  const [eventAnnouncementTitle, setEventAnnouncementTitle] = useState("");
+  const [eventAnnouncementBody, setEventAnnouncementBody] = useState("");
+  const [eventMessageText, setEventMessageText] = useState("");
+  const [eventCommunitySaving, setEventCommunitySaving] = useState(false);
   const [assignmentEditorEvent, setAssignmentEditorEvent] = useState(null);
   const [assignmentDraft, setAssignmentDraft] = useState({});
   const [assignmentSignupEnabled, setAssignmentSignupEnabled] = useState(false);
@@ -405,6 +411,7 @@ export default function Home() {
     audience: "whole",
     patrolId: "",
     date: "2026-09-28",
+    endDate: "",
     startTime: "17:30",
     endTime: "19:30",
     location: "Basecamp",
@@ -491,6 +498,44 @@ export default function Home() {
       supabase.removeChannel(channel);
     };
   }, [session?.user?.id]);
+
+  useEffect(() => {
+    if (!eventDetails?.id || !canUseEventCommunity(eventDetails)) {
+      setEventAnnouncements([]);
+      setEventMessages([]);
+      return;
+    }
+
+    loadEventCommunity(eventDetails.id);
+
+    const channel = supabase
+      .channel(`event-community-${eventDetails.id}-${session?.user?.id || "anon"}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "event_announcements",
+          filter: `event_id=eq.${eventDetails.id}`,
+        },
+        () => loadEventCommunity(eventDetails.id)
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "event_messages",
+          filter: `event_id=eq.${eventDetails.id}`,
+        },
+        () => loadEventCommunity(eventDetails.id)
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [eventDetails?.id, session?.user?.id]);
 
   useEffect(() => {
     if (!taskChatTask?.id) return;
@@ -740,7 +785,7 @@ export default function Home() {
       const { data: eventData, error: eventError } = await supabase
         .from("events")
         .select(
-          "id,title,event_type,event_date,start_time,end_time,location,description,created_by,whole_troop,patrol_id,what_to_bring,cost,payment_deadline,responsible_person_id,signup_enabled,signup_deadline"
+          "id,title,event_type,event_date,end_date,start_time,end_time,location,description,created_by,whole_troop,patrol_id,what_to_bring,cost,payment_deadline,responsible_person_id,signup_enabled,signup_deadline"
         )
         .order("event_date")
         .order("start_time");
@@ -831,6 +876,7 @@ export default function Home() {
       audience: "whole",
       patrolId: patrols[0]?.id ? String(patrols[0].id) : "",
       date: selectedDate,
+      endDate: "",
       startTime: tripPreset ? "08:00" : "17:30",
       endTime: tripPreset ? "18:00" : "19:30",
       location: tripPreset ? "Inne" : "Basecamp",
@@ -865,13 +911,28 @@ export default function Home() {
       return;
     }
 
-    if (!eventForm.date || !eventForm.startTime) {
-      alert("Uzupełnij datę i godzinę.");
+    if (!eventForm.date) {
+      alert("Uzupełnij datę rozpoczęcia.");
       return;
     }
 
-    if (eventForm.endTime && eventForm.endTime <= eventForm.startTime) {
-      alert("Godzina zakończenia musi być późniejsza niż rozpoczęcia.");
+    if (eventForm.endDate && eventForm.endDate < eventForm.date) {
+      alert("Data zakończenia nie może być wcześniejsza niż rozpoczęcia.");
+      return;
+    }
+
+    if (eventForm.endTime && !eventForm.startTime) {
+      alert("Jeśli wpisujesz godzinę zakończenia, wpisz też godzinę rozpoczęcia.");
+      return;
+    }
+
+    if (
+      eventForm.startTime &&
+      eventForm.endTime &&
+      eventForm.endTime <= eventForm.startTime &&
+      (!eventForm.endDate || eventForm.endDate === eventForm.date)
+    ) {
+      alert("Przy wydarzeniu jednodniowym godzina zakończenia musi być późniejsza niż rozpoczęcia.");
       return;
     }
 
@@ -902,12 +963,16 @@ export default function Home() {
     let createdEventId = null;
 
     try {
-      const reservesRoom = MAIN_LOCATIONS.includes(finalLocation);
+      const reservesRoom =
+        MAIN_LOCATIONS.includes(finalLocation) &&
+        Boolean(eventForm.startTime) &&
+        Boolean(eventForm.endTime) &&
+        (!eventForm.endDate || eventForm.endDate === eventForm.date);
 
       const starts = reservesRoom
         ? halfHourStarts(
             eventForm.startTime,
-            eventForm.endTime || addMinutes(eventForm.startTime, 30)
+            eventForm.endTime
           )
         : [];
 
@@ -945,7 +1010,10 @@ export default function Home() {
           title: eventForm.title.trim(),
           event_type: eventForm.eventType,
           event_date: eventForm.date,
-          start_time: `${eventForm.startTime}:00`,
+          end_date: eventForm.endDate || null,
+          start_time: eventForm.startTime
+            ? `${eventForm.startTime}:00`
+            : null,
           end_time: eventForm.endTime
             ? `${eventForm.endTime}:00`
             : null,
@@ -1040,8 +1108,16 @@ export default function Home() {
       await sendPush({
         kind: "event_update",
         title: `Nowe wydarzenie: ${eventForm.title.trim()}`,
-        body: `${formatDate(eventForm.date)}, ${eventForm.startTime}${
-          eventForm.endTime ? `–${eventForm.endTime}` : ""
+        body: `${
+          eventForm.endDate
+            ? `${formatDate(eventForm.date)}–${formatDate(eventForm.endDate)}`
+            : formatDate(eventForm.date)
+        }${
+          eventForm.startTime
+            ? `, ${eventForm.startTime}${
+                eventForm.endTime ? `–${eventForm.endTime}` : ""
+              }`
+            : ""
         }, ${finalLocation}`,
         target_user_ids:
           isTripType(eventForm.eventType) && eventForm.signupEnabled
@@ -1091,6 +1167,171 @@ export default function Home() {
     } finally {
       setEventSaving(false);
     }
+  }
+
+  function canUseEventCommunity(eventItem) {
+    if (!eventItem || !session?.user) return false;
+    if (isAdmin) return true;
+    if (eventItem.whole_troop) return true;
+
+    if (
+      eventItem.patrol_id &&
+      myPatrolIds.includes(Number(eventItem.patrol_id))
+    ) {
+      return true;
+    }
+
+    if (
+      eventAssignments.some(
+        (item) =>
+          Number(item.event_id) === Number(eventItem.id) &&
+          item.user_id === session.user.id
+      )
+    ) {
+      return true;
+    }
+
+    return eventSignups.some(
+      (item) =>
+        Number(item.event_id) === Number(eventItem.id) &&
+        item.user_id === session.user.id &&
+        item.status === "approved"
+    );
+  }
+
+  async function loadEventCommunity(eventId) {
+    if (!eventId) return;
+
+    const [annResult, msgResult] = await Promise.all([
+      supabase
+        .from("event_announcements")
+        .select("id,event_id,user_id,title,body,pinned,created_at,updated_at")
+        .eq("event_id", eventId)
+        .order("pinned", { ascending: false })
+        .order("created_at", { ascending: false }),
+
+      supabase
+        .from("event_messages")
+        .select("id,event_id,user_id,message,created_at,edited_at")
+        .eq("event_id", eventId)
+        .order("created_at"),
+    ]);
+
+    setEventAnnouncements(
+      annResult.error ? [] : annResult.data || []
+    );
+
+    setEventMessages(
+      msgResult.error ? [] : msgResult.data || []
+    );
+
+    if (annResult.error) {
+      console.warn("Błąd ogłoszeń wydarzenia:", annResult.error);
+    }
+
+    if (msgResult.error) {
+      console.warn("Błąd czatu wydarzenia:", msgResult.error);
+    }
+  }
+
+  async function addEventAnnouncement() {
+    if (!eventDetails || !session?.user) return;
+
+    const title = eventAnnouncementTitle.trim();
+    const body = eventAnnouncementBody.trim();
+
+    if (!title || !body) {
+      alert("Wpisz tytuł i treść ogłoszenia.");
+      return;
+    }
+
+    setEventCommunitySaving(true);
+
+    try {
+      const { error } = await supabase
+        .from("event_announcements")
+        .insert({
+          event_id: eventDetails.id,
+          user_id: session.user.id,
+          title,
+          body,
+        });
+
+      if (error) throw error;
+
+      setEventAnnouncementTitle("");
+      setEventAnnouncementBody("");
+      await loadEventCommunity(eventDetails.id);
+    } catch (error) {
+      alert(`Nie udało się dodać ogłoszenia.\n\n${error?.message || ""}`);
+    } finally {
+      setEventCommunitySaving(false);
+    }
+  }
+
+  async function deleteEventAnnouncement(item) {
+    if (!item?.id) return;
+    if (item.user_id !== session?.user?.id && !isAdmin) return;
+    if (!window.confirm("Usunąć to ogłoszenie?")) return;
+
+    const { error } = await supabase
+      .from("event_announcements")
+      .delete()
+      .eq("id", item.id);
+
+    if (error) {
+      alert(`Nie udało się usunąć ogłoszenia.\n\n${error.message}`);
+      return;
+    }
+
+    await loadEventCommunity(eventDetails.id);
+  }
+
+  async function sendEventMessage() {
+    if (!eventDetails || !session?.user) return;
+
+    const message = eventMessageText.trim();
+
+    if (!message) return;
+
+    setEventCommunitySaving(true);
+
+    try {
+      const { error } = await supabase
+        .from("event_messages")
+        .insert({
+          event_id: eventDetails.id,
+          user_id: session.user.id,
+          message,
+        });
+
+      if (error) throw error;
+
+      setEventMessageText("");
+      await loadEventCommunity(eventDetails.id);
+    } catch (error) {
+      alert(`Nie udało się wysłać wiadomości.\n\n${error?.message || ""}`);
+    } finally {
+      setEventCommunitySaving(false);
+    }
+  }
+
+  async function deleteEventMessage(item) {
+    if (!item?.id) return;
+    if (item.user_id !== session?.user?.id && !isAdmin) return;
+    if (!window.confirm("Usunąć tę wiadomość?")) return;
+
+    const { error } = await supabase
+      .from("event_messages")
+      .delete()
+      .eq("id", item.id);
+
+    if (error) {
+      alert(`Nie udało się usunąć wiadomości.\n\n${error.message}`);
+      return;
+    }
+
+    await loadEventCommunity(eventDetails.id);
   }
 
   function signupsForEvent(eventId) {
@@ -2700,6 +2941,8 @@ export default function Home() {
     setEvents([]);
     setEventAssignments([]);
     setEventSignups([]);
+    setEventAnnouncements([]);
+    setEventMessages([]);
     setTasks([]);
     setPeople([]);
     setMemberships([]);
@@ -7306,22 +7549,6 @@ export default function Home() {
               </div>
             )}
 
-            <label>
-              <strong>Data</strong>
-
-              <input
-                type="date"
-                value={eventForm.date}
-                onChange={(event) =>
-                  setEventForm({
-                    ...eventForm,
-                    date: event.target.value,
-                  })
-                }
-                style={inputStyle}
-              />
-            </label>
-
             <div
               style={{
                 display: "grid",
@@ -7330,16 +7557,19 @@ export default function Home() {
               }}
             >
               <label>
-                <strong>Od</strong>
-
+                <strong>Data od</strong>
                 <input
-                  type="time"
-                  step="1800"
-                  value={eventForm.startTime}
+                  type="date"
+                  value={eventForm.date}
                   onChange={(event) =>
                     setEventForm({
                       ...eventForm,
-                      startTime: event.target.value,
+                      date: event.target.value,
+                      endDate:
+                        eventForm.endDate &&
+                        eventForm.endDate < event.target.value
+                          ? ""
+                          : eventForm.endDate,
                     })
                   }
                   style={inputStyle}
@@ -7347,21 +7577,94 @@ export default function Home() {
               </label>
 
               <label>
-                <strong>Do</strong>
-
+                <strong>Data do</strong>
                 <input
-                  type="time"
-                  step="1800"
-                  value={eventForm.endTime}
+                  type="date"
+                  min={eventForm.date || undefined}
+                  value={eventForm.endDate}
                   onChange={(event) =>
                     setEventForm({
                       ...eventForm,
-                      endTime: event.target.value,
+                      endDate: event.target.value,
                     })
                   }
                   style={inputStyle}
                 />
+                <div
+                  style={{
+                    marginTop: 5,
+                    fontSize: 11,
+                    color: "#7a837e",
+                  }}
+                >
+                  Zostaw puste przy wydarzeniu jednodniowym.
+                </div>
               </label>
+            </div>
+
+            <div
+              style={{
+                ...cardStyle,
+                boxShadow: "none",
+                background: "#f7f5ee",
+              }}
+            >
+              <strong>Godziny — opcjonalnie</strong>
+
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: 10,
+                  marginTop: 9,
+                }}
+              >
+                <label>
+                  <span style={{ fontSize: 12, fontWeight: 800 }}>Od</span>
+                  <input
+                    type="time"
+                    step="1800"
+                    value={eventForm.startTime}
+                    onChange={(event) =>
+                      setEventForm({
+                        ...eventForm,
+                        startTime: event.target.value,
+                      })
+                    }
+                    style={inputStyle}
+                  />
+                </label>
+
+                <label>
+                  <span style={{ fontSize: 12, fontWeight: 800 }}>Do</span>
+                  <input
+                    type="time"
+                    step="1800"
+                    value={eventForm.endTime}
+                    onChange={(event) =>
+                      setEventForm({
+                        ...eventForm,
+                        endTime: event.target.value,
+                      })
+                    }
+                    style={inputStyle}
+                  />
+                </label>
+              </div>
+
+              <button
+                type="button"
+                style={{ ...secondaryStyle, marginTop: 8 }}
+                onClick={() =>
+                  setEventForm({
+                    ...eventForm,
+                    startTime: "",
+                    endTime: "",
+                  })
+                }
+              >
+                Bez godzin
+              </button>
             </div>
 
             <label>
@@ -7858,17 +8161,23 @@ export default function Home() {
             }}
           >
             📅 {formatDate(eventDetails.event_date)}
-            <br />
-
-            🕐 {normalizeTime(
-              eventDetails.start_time
-            )}
-            {eventDetails.end_time
-              ? `–${normalizeTime(
-                  eventDetails.end_time
-                )}`
+            {eventDetails.end_date
+              ? ` – ${formatDate(eventDetails.end_date)}`
               : ""}
             <br />
+
+            {(eventDetails.start_time || eventDetails.end_time) && (
+              <>
+                🕐{" "}
+                {eventDetails.start_time
+                  ? normalizeTime(eventDetails.start_time)
+                  : ""}
+                {eventDetails.end_time
+                  ? `–${normalizeTime(eventDetails.end_time)}`
+                  : ""}
+                <br />
+              </>
+            )}
 
             📍 {eventDetails.location}
           </div>
@@ -8316,6 +8625,233 @@ export default function Home() {
                   )}
               </div>
             )}
+
+          {canUseEventCommunity(eventDetails) && (
+            <div
+              style={{
+                ...cardStyle,
+                boxShadow: "none",
+                marginTop: 14,
+                border: "1px solid #d8dfda",
+              }}
+            >
+              <div style={eyebrowStyle}>STREFA WYDARZENIA</div>
+              <h3 style={{ margin: "6px 0 12px" }}>
+                Ogłoszenia i czat
+              </h3>
+
+              <details open={eventAnnouncements.length > 0}>
+                <summary style={{ cursor: "pointer", fontWeight: 900 }}>
+                  📣 Ogłoszenia ({eventAnnouncements.length})
+                </summary>
+
+                <div style={{ display: "grid", gap: 9, marginTop: 10 }}>
+                  {eventAnnouncements.map((item) => {
+                    const author = people.find(
+                      (person) => person.id === item.user_id
+                    );
+
+                    return (
+                      <div
+                        key={`event-ann-${item.id}`}
+                        style={{
+                          ...cardStyle,
+                          boxShadow: "none",
+                          background: "#f7f5ee",
+                          padding: 11,
+                        }}
+                      >
+                        <strong>{item.title}</strong>
+                        <div
+                          style={{
+                            marginTop: 6,
+                            whiteSpace: "pre-wrap",
+                            lineHeight: 1.55,
+                          }}
+                        >
+                          {item.body}
+                        </div>
+                        <div
+                          style={{
+                            marginTop: 7,
+                            color: "#7b837e",
+                            fontSize: 10,
+                          }}
+                        >
+                          {author?.full_name ||
+                            author?.name ||
+                            "Użytkownik"}{" "}
+                          •{" "}
+                          {new Date(item.created_at).toLocaleString("pl-PL")}
+                        </div>
+
+                        {(item.user_id === session.user.id || isAdmin) && (
+                          <button
+                            style={{
+                              border: 0,
+                              background: "transparent",
+                              color: "#8b2635",
+                              padding: "7px 0 0",
+                              cursor: "pointer",
+                              fontSize: 11,
+                            }}
+                            onClick={() =>
+                              deleteEventAnnouncement(item)
+                            }
+                          >
+                            Usuń
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  <div
+                    style={{
+                      ...cardStyle,
+                      boxShadow: "none",
+                      background: "#f1f7f2",
+                    }}
+                  >
+                    <strong>Dodaj ogłoszenie</strong>
+                    <input
+                      value={eventAnnouncementTitle}
+                      onChange={(event) =>
+                        setEventAnnouncementTitle(event.target.value)
+                      }
+                      placeholder="Tytuł ogłoszenia"
+                      style={{ ...inputStyle, marginTop: 8 }}
+                    />
+                    <textarea
+                      value={eventAnnouncementBody}
+                      onChange={(event) =>
+                        setEventAnnouncementBody(event.target.value)
+                      }
+                      placeholder="Treść ogłoszenia..."
+                      rows={3}
+                      style={{
+                        ...inputStyle,
+                        marginTop: 8,
+                        fontFamily: "inherit",
+                        resize: "vertical",
+                      }}
+                    />
+                    <button
+                      style={{ ...primaryStyle, marginTop: 8 }}
+                      disabled={eventCommunitySaving}
+                      onClick={addEventAnnouncement}
+                    >
+                      Opublikuj ogłoszenie
+                    </button>
+                  </div>
+                </div>
+              </details>
+
+              <details style={{ marginTop: 14 }}>
+                <summary style={{ cursor: "pointer", fontWeight: 900 }}>
+                  💬 Czat ({eventMessages.length})
+                </summary>
+
+                <div
+                  style={{
+                    display: "grid",
+                    gap: 8,
+                    maxHeight: 330,
+                    overflowY: "auto",
+                    marginTop: 10,
+                  }}
+                >
+                  {eventMessages.map((item) => {
+                    const author = people.find(
+                      (person) => person.id === item.user_id
+                    );
+                    const mine = item.user_id === session.user.id;
+
+                    return (
+                      <div
+                        key={`event-msg-${item.id}`}
+                        style={{
+                          ...cardStyle,
+                          boxShadow: "none",
+                          marginLeft: mine ? 24 : 0,
+                          marginRight: mine ? 0 : 24,
+                          padding: 10,
+                          background: mine
+                            ? "#f1f7f2"
+                            : "#f7f5ee",
+                        }}
+                      >
+                        <strong style={{ fontSize: 12 }}>
+                          {author?.full_name ||
+                            author?.name ||
+                            "Użytkownik"}
+                        </strong>
+                        <div
+                          style={{
+                            marginTop: 5,
+                            lineHeight: 1.55,
+                            whiteSpace: "pre-wrap",
+                          }}
+                        >
+                          {item.message}
+                        </div>
+                        <div
+                          style={{
+                            marginTop: 5,
+                            fontSize: 10,
+                            color: "#87908a",
+                          }}
+                        >
+                          {new Date(item.created_at).toLocaleString("pl-PL")}
+                        </div>
+
+                        {(mine || isAdmin) && (
+                          <button
+                            style={{
+                              border: 0,
+                              background: "transparent",
+                              color: "#8b2635",
+                              padding: "6px 0 0",
+                              cursor: "pointer",
+                              fontSize: 10,
+                            }}
+                            onClick={() => deleteEventMessage(item)}
+                          >
+                            Usuń
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <textarea
+                  value={eventMessageText}
+                  onChange={(event) =>
+                    setEventMessageText(event.target.value)
+                  }
+                  placeholder="Napisz wiadomość do uczestników wydarzenia..."
+                  rows={3}
+                  style={{
+                    ...inputStyle,
+                    marginTop: 10,
+                    fontFamily: "inherit",
+                    resize: "vertical",
+                  }}
+                />
+
+                <button
+                  style={{ ...primaryStyle, marginTop: 8 }}
+                  disabled={
+                    eventCommunitySaving || !eventMessageText.trim()
+                  }
+                  onClick={sendEventMessage}
+                >
+                  Wyślij
+                </button>
+              </details>
+            </div>
+          )}
 
           {eventDetails.description && (
             <div
