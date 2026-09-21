@@ -139,6 +139,50 @@ function rangesOverlap(startA, endA, startB, endB) {
   return startA < endB && startB < endA;
 }
 
+function normalizeRole(role) {
+  return String(role || "").trim().toLowerCase();
+}
+
+function eventTypeLabel(type) {
+  const labels = {
+    "zbiórka": "Zbiórka",
+    "wydarzenie": "Wydarzenie",
+    "służba": "Służba",
+    "wyjazd": "Wyjazd",
+    "biwak": "Biwak",
+    "rajd": "Rajd",
+    "zawody": "Zawody",
+    "inne": "Inne",
+  };
+
+  return labels[type] || "Wydarzenie";
+}
+
+function isTripType(type) {
+  return ["wyjazd", "biwak", "rajd", "zawody"].includes(type);
+}
+
+function daysUntil(dateString) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const target = new Date(`${dateString}T12:00:00`);
+  target.setHours(0, 0, 0, 0);
+
+  return Math.round((target - today) / 86400000);
+}
+
+function tripCountdownLabel(dateString) {
+  const days = daysUntil(dateString);
+
+  if (days < 0) return "zakończone";
+  if (days === 0) return "dzisiaj";
+  if (days === 1) return "jutro";
+  if (days < 7) return `za ${days} dni`;
+  if (days < 14) return "za tydzień";
+  return `za ${days} dni`;
+}
+
 const cardStyle = {
   background: "white",
   borderRadius: 18,
@@ -288,7 +332,7 @@ export default function Home() {
       console.error("Błąd profilu:", error);
       setRole("member");
     } else {
-      setRole(data?.role || "member");
+      setRole(normalizeRole(data?.role || "member"));
     }
 
     setLoading(false);
@@ -454,16 +498,18 @@ export default function Home() {
     }
   }
 
-  function openEventForm() {
+  function openEventForm(presetType = "zbiórka") {
+    const tripPreset = isTripType(presetType);
+
     setEventForm({
       title: "",
-      eventType: "zbiórka",
+      eventType: presetType,
       audience: "whole",
       patrolId: patrols[0]?.id ? String(patrols[0].id) : "",
       date: selectedDate,
-      startTime: "17:30",
-      endTime: "19:30",
-      location: "Basecamp",
+      startTime: tripPreset ? "08:00" : "17:30",
+      endTime: tripPreset ? "18:00" : "19:30",
+      location: tripPreset ? "Inne" : "Basecamp",
       customLocation: "",
       description: "",
       bring: "",
@@ -476,7 +522,10 @@ export default function Home() {
   }
 
   async function saveEvent() {
-    if (!session?.user || role !== "admin") return;
+    if (!session?.user || !isAdmin) {
+      alert("Tylko administrator może dodawać wydarzenia.");
+      return;
+    }
 
     const finalLocation =
       eventForm.location === "Inne"
@@ -623,7 +672,7 @@ export default function Home() {
   }
 
   async function deleteEvent(eventItem) {
-    if (role !== "admin" || !eventItem?.id) return;
+    if (!isAdmin || !eventItem?.id) return;
 
     const confirmed = window.confirm(
       `Usunąć wydarzenie „${eventItem.title}”?`
@@ -679,10 +728,7 @@ export default function Home() {
 
   function openReservation(time = "17:30", location = "Nora") {
     setForm({
-      reserver:
-        role === "admin"
-          ? "whole"
-          : String(patrols[0]?.id || ""),
+      reserver: isAdmin ? "whole" : String(patrols[0]?.id || ""),
       location: MAIN_LOCATIONS.includes(location) ? location : "Inne",
       customLocation: MAIN_LOCATIONS.includes(location) ? "" : location,
       startTime: time,
@@ -724,7 +770,7 @@ export default function Home() {
 
     const wholeTroop = form.reserver === "whole";
 
-    if (wholeTroop && role !== "admin") {
+    if (wholeTroop && !isAdmin) {
       alert("Tylko administrator może rezerwować dla całej drużyny.");
       return;
     }
@@ -963,11 +1009,12 @@ export default function Home() {
   const validTimes = availableTimesForDate(selectedDate);
 
   const today = dateToString(new Date());
+  const isAdmin = normalizeRole(role) === "admin";
 
   const visibleEvents = events
     .filter((item) => item.event_date >= today)
     .filter((item) => {
-      if (role === "admin") return true;
+      if (isAdmin) return true;
       if (item.whole_troop) return true;
 
       return myPatrolIds.includes(Number(item.patrol_id));
@@ -979,6 +1026,17 @@ export default function Home() {
       item.reservedBy === session.user.id &&
       item.date >= today
   );
+
+  const upcomingTrips = visibleEvents
+    .filter((item) => isTripType(item.event_type))
+    .filter((item) => item.event_date >= today)
+    .sort((a, b) =>
+      `${a.event_date}T${normalizeTime(a.start_time)}`.localeCompare(
+        `${b.event_date}T${normalizeTime(b.start_time)}`
+      )
+    );
+
+  const nextTrip = upcomingTrips[0] || null;
 
   const myItems = [
     ...visibleEvents.map((item) => ({
@@ -1002,7 +1060,7 @@ export default function Home() {
     <main style={appStyle}>
       <AppHeader
         subtitle={
-          role === "admin"
+          isAdmin
             ? "Panel administratora"
             : "Centrum drużyny"
         }
@@ -1367,7 +1425,7 @@ export default function Home() {
                 </h2>
               </div>
 
-              {role === "admin" && (
+              {isAdmin && (
                 <button
                   style={primaryStyle}
                   onClick={openEventForm}
@@ -1376,6 +1434,78 @@ export default function Home() {
                 </button>
               )}
             </div>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+                gap: 9,
+                marginBottom: 16,
+              }}
+            >
+              <MiniStat
+                value={visibleEvents.length}
+                label="wydarzenia"
+              />
+              <MiniStat
+                value={ownReservations.length}
+                label="rezerwacje"
+              />
+              <MiniStat
+                value={upcomingTrips.length}
+                label="wyjazdy"
+              />
+            </div>
+
+            {nextTrip && (
+              <button
+                onClick={() => setEventDetails(nextTrip)}
+                style={{
+                  ...cardStyle,
+                  width: "100%",
+                  border: 0,
+                  background: "#173b2b",
+                  color: "white",
+                  textAlign: "left",
+                  cursor: "pointer",
+                  marginBottom: 16,
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 900,
+                    letterSpacing: 1.3,
+                    color: "#d9bd72",
+                  }}
+                >
+                  NAJBLIŻSZY WYJAZD • {tripCountdownLabel(nextTrip.event_date).toUpperCase()}
+                </div>
+
+                <div
+                  style={{
+                    fontSize: 20,
+                    fontWeight: 900,
+                    marginTop: 7,
+                  }}
+                >
+                  {nextTrip.title}
+                </div>
+
+                <div
+                  style={{
+                    marginTop: 7,
+                    color: "#d9e3dd",
+                    lineHeight: 1.6,
+                  }}
+                >
+                  📅 {formatDate(nextTrip.event_date)}
+                  <br />
+                  📍 {nextTrip.location}
+                  {nextTrip.cost ? ` • 💰 ${nextTrip.cost}` : ""}
+                </div>
+              </button>
+            )}
 
             {myItems.length === 0 && (
               <div
@@ -1471,7 +1601,7 @@ export default function Home() {
                     <div style={eyebrowStyle}>
                       {eventItem.whole_troop
                         ? "CAŁA DRUŻYNA"
-                        : role === "admin"
+                        : isAdmin
                         ? `ZASTĘP • ${
                             patrol?.name || "Zastęp"
                           }`
@@ -1537,10 +1667,207 @@ export default function Home() {
         )}
 
         {activeTab === "Wyjazdy" && (
-          <SimplePage
-            title="Wyjazdy"
-            text="Biwaki, rajdy, zawody i wyprawy."
-          />
+          <>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: 12,
+                marginBottom: 18,
+                flexWrap: "wrap",
+              }}
+            >
+              <div>
+                <div style={eyebrowStyle}>Wyprawy drużyny</div>
+                <h2 style={{ margin: "4px 0 0" }}>Wyjazdy</h2>
+              </div>
+
+              {isAdmin && (
+                <button
+                  style={primaryStyle}
+                  onClick={() => openEventForm("wyjazd")}
+                >
+                  + Dodaj wyjazd
+                </button>
+              )}
+            </div>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+                gap: 9,
+                marginBottom: 18,
+              }}
+            >
+              <MiniStat value={upcomingTrips.length} label="nadchodzące" />
+              <MiniStat
+                value={upcomingTrips.filter((item) => item.cost).length}
+                label="płatne"
+              />
+              <MiniStat
+                value={upcomingTrips.filter((item) => item.what_to_bring).length}
+                label="z listą rzeczy"
+              />
+            </div>
+
+            {isAdmin && (
+              <div
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  overflowX: "auto",
+                  paddingBottom: 5,
+                  marginBottom: 16,
+                }}
+              >
+                {[
+                  ["wyjazd", "Wyjazd"],
+                  ["biwak", "Biwak"],
+                  ["rajd", "Rajd"],
+                  ["zawody", "Zawody"],
+                ].map(([type, label]) => (
+                  <button
+                    key={type}
+                    style={secondaryStyle}
+                    onClick={() => openEventForm(type)}
+                  >
+                    + {label}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {upcomingTrips.length === 0 ? (
+              <div
+                style={{
+                  ...cardStyle,
+                  textAlign: "center",
+                  color: "#68736d",
+                }}
+              >
+                Nie ma jeszcze żadnych nadchodzących wyjazdów.
+                {isAdmin && (
+                  <div style={{ marginTop: 12 }}>
+                    <button
+                      style={primaryStyle}
+                      onClick={() => openEventForm("wyjazd")}
+                    >
+                      Dodaj pierwszy wyjazd
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div style={{ display: "grid", gap: 12 }}>
+                {upcomingTrips.map((trip) => {
+                  const patrol = patrols.find(
+                    (item) => Number(item.id) === Number(trip.patrol_id)
+                  );
+
+                  return (
+                    <button
+                      key={`trip-${trip.id}`}
+                      onClick={() => setEventDetails(trip)}
+                      style={{
+                        ...cardStyle,
+                        border: 0,
+                        borderLeft: "5px solid #607b54",
+                        textAlign: "left",
+                        cursor: "pointer",
+                        color: "#17231c",
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "flex-start",
+                          justifyContent: "space-between",
+                          gap: 10,
+                        }}
+                      >
+                        <div>
+                          <div style={eyebrowStyle}>
+                            {eventTypeLabel(trip.event_type).toUpperCase()}
+                            {" • "}
+                            {trip.whole_troop
+                              ? "CAŁA DRUŻYNA"
+                              : patrol?.name || "ZASTĘP"}
+                          </div>
+
+                          <h3
+                            style={{
+                              margin: "7px 0 8px",
+                              fontSize: 20,
+                            }}
+                          >
+                            {trip.title}
+                          </h3>
+                        </div>
+
+                        <span
+                          style={{
+                            background: "#edf2ee",
+                            color: "#42604f",
+                            borderRadius: 20,
+                            padding: "7px 10px",
+                            fontSize: 11,
+                            fontWeight: 900,
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {tripCountdownLabel(trip.event_date)}
+                        </span>
+                      </div>
+
+                      <div
+                        style={{
+                          color: "#526159",
+                          lineHeight: 1.7,
+                        }}
+                      >
+                        📅 {formatDate(trip.event_date)}
+                        <br />
+                        🕐 {normalizeTime(trip.start_time)}
+                        {trip.end_time ? `–${normalizeTime(trip.end_time)}` : ""}
+                        <br />
+                        📍 {trip.location}
+
+                        {trip.cost && (
+                          <>
+                            <br />
+                            💰 {trip.cost}
+                            {trip.payment_deadline
+                              ? ` • płatność do ${formatDate(trip.payment_deadline)}`
+                              : ""}
+                          </>
+                        )}
+
+                        {trip.what_to_bring && (
+                          <>
+                            <br />
+                            🎒 {trip.what_to_bring}
+                          </>
+                        )}
+                      </div>
+
+                      <div
+                        style={{
+                          marginTop: 12,
+                          color: "#8b2635",
+                          fontWeight: 800,
+                          fontSize: 13,
+                        }}
+                      >
+                        Zobacz szczegóły →
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </>
         )}
 
         {activeTab === "Zadania" && (
@@ -1887,7 +2214,7 @@ export default function Home() {
               />
             </label>
 
-            {role === "admin" && (
+            {isAdmin && (
               <div
                 style={{
                   ...cardStyle,
@@ -2034,10 +2361,29 @@ export default function Home() {
           close={() => setEventDetails(null)}
         >
           <div style={eyebrowStyle}>
+            {eventTypeLabel(eventDetails.event_type).toUpperCase()}
+            {" • "}
             {eventDetails.whole_troop
               ? "CAŁA DRUŻYNA"
               : "WYDARZENIE ZASTĘPU"}
           </div>
+
+          {isTripType(eventDetails.event_type) && (
+            <div
+              style={{
+                display: "inline-block",
+                marginTop: 9,
+                background: "#edf2ee",
+                color: "#42604f",
+                borderRadius: 20,
+                padding: "7px 10px",
+                fontSize: 11,
+                fontWeight: 900,
+              }}
+            >
+              {tripCountdownLabel(eventDetails.event_date)}
+            </div>
+          )}
 
           <h2 style={{ marginBottom: 8 }}>
             {eventDetails.title}
@@ -2140,7 +2486,7 @@ export default function Home() {
                 </div>
               )}
 
-              {role === "admin" && (
+              {isAdmin && (
                 <div
                   style={{
                     marginTop: 12,
@@ -2161,7 +2507,7 @@ export default function Home() {
             style={{
               display: "grid",
               gridTemplateColumns:
-                role === "admin" ? "1fr 1fr" : "1fr",
+                isAdmin ? "1fr 1fr" : "1fr",
               gap: 9,
               marginTop: 18,
             }}
@@ -2173,7 +2519,7 @@ export default function Home() {
               Zamknij
             </button>
 
-            {role === "admin" && (
+            {isAdmin && (
               <button
                 style={primaryStyle}
                 onClick={() =>
@@ -2214,15 +2560,29 @@ export default function Home() {
                 onChange={(event) => setForm({ ...form, reserver: event.target.value })}
                 style={inputStyle}
               >
-                {role === "admin" && (
-                  <option value="whole">Cała drużyna</option>
-                )}
+                <option value="whole" disabled={!isAdmin}>
+                  Cała drużyna{!isAdmin ? " — tylko admin" : ""}
+                </option>
+
                 {patrols.map((patrol) => (
                   <option key={patrol.id} value={String(patrol.id)}>
                     {patrol.name} — {patrol.leader_name}
                   </option>
                 ))}
               </select>
+
+              <div
+                style={{
+                  fontSize: 12,
+                  color: "#6d7771",
+                  marginTop: 7,
+                  lineHeight: 1.45,
+                }}
+              >
+                {isAdmin
+                  ? "Jako admin możesz rezerwować dla całej drużyny albo dowolnego zastępu."
+                  : "Możesz rezerwować tylko jako zastęp. Opcja „Cała drużyna” jest zarezerwowana dla admina."}
+              </div>
             </label>
 
             <label>
@@ -2913,6 +3273,42 @@ function ModalBackground({ children, close }) {
         }}
       >
         {children}
+      </div>
+    </div>
+  );
+}
+
+function MiniStat({ value, label }) {
+  return (
+    <div
+      style={{
+        ...cardStyle,
+        padding: 13,
+        textAlign: "center",
+        boxShadow: "none",
+        border: "1px solid #e0e4e0",
+      }}
+    >
+      <div
+        style={{
+          fontSize: 22,
+          lineHeight: 1,
+          fontWeight: 900,
+          color: "#173b2b",
+        }}
+      >
+        {value}
+      </div>
+
+      <div
+        style={{
+          marginTop: 6,
+          color: "#6b756f",
+          fontSize: 11,
+          fontWeight: 700,
+        }}
+      >
+        {label}
       </div>
     </div>
   );
