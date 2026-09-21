@@ -241,6 +241,21 @@ function assignmentTypeLabel(type) {
   return "uczestnik";
 }
 
+function quarterForDate(date = new Date()) {
+  return Math.floor(date.getMonth() / 3) + 1;
+}
+
+function quarterLabel(quarter) {
+  return `${["I", "II", "III", "IV"][Number(quarter) - 1] || quarter} kwartał`;
+}
+
+function roleLabel(role) {
+  const normalized = normalizeRole(role);
+  if (normalized === "admin") return "Administrator";
+  if (normalized === "parent") return "Rodzic";
+  return "Harcerz / członek";
+}
+
 const cardStyle = {
   background: "white",
   borderRadius: 18,
@@ -320,6 +335,9 @@ export default function Home() {
   const [notifications, setNotifications] = useState([]);
   const [pushStatus, setPushStatus] = useState("unknown");
   const [pushBusy, setPushBusy] = useState(false);
+  const [membershipDues, setMembershipDues] = useState([]);
+  const [duesSaving, setDuesSaving] = useState(false);
+  const [deepLinkHandled, setDeepLinkHandled] = useState(false);
   const [moreSection, setMoreSection] = useState("menu");
 
   const [announcementModalOpen, setAnnouncementModalOpen] = useState(false);
@@ -410,6 +428,7 @@ export default function Home() {
       loadPeople();
       loadAnnouncements();
       loadNotifications();
+      loadMembershipDues();
       checkPushStatus();
 
       if (role !== "parent") {
@@ -436,7 +455,7 @@ export default function Home() {
   async function loadRole(userId) {
     const { data, error } = await supabase
       .from("profiles")
-      .select("id,role,name,full_name,function_title,is_staff")
+      .select("id,role,name,full_name,function_title,is_staff,membership_number")
       .eq("id", userId)
       .maybeSingle();
 
@@ -472,7 +491,7 @@ export default function Home() {
 
     const { data, error } = await supabase
       .from("profiles")
-      .select("id,role,name,full_name,function_title,is_staff")
+      .select("id,role,name,full_name,function_title,is_staff,membership_number")
       .eq("id", session.user.id)
       .maybeSingle();
 
@@ -856,7 +875,9 @@ export default function Home() {
           eventForm.audience,
           eventForm.patrolId
         ),
-        link: "/",
+        link: isTripType(eventForm.eventType)
+          ? `/?view=wyjazdy&event=${created.id}`
+          : `/?view=moje&event=${created.id}`,
       });
 
       setEventModalOpen(false);
@@ -997,6 +1018,183 @@ export default function Home() {
     setEventDetails(null);
 
     await Promise.all([loadEvents(), loadSchedule()]);
+  }
+
+  function applyAppLink(link, clearUrl = false) {
+    if (typeof window === "undefined") return;
+
+    try {
+      const url = new URL(link || "/", window.location.origin);
+      const view = (url.searchParams.get("view") || "").toLowerCase();
+      const section = (url.searchParams.get("section") || "").toLowerCase();
+      const date = url.searchParams.get("date");
+      const eventId = url.searchParams.get("event");
+
+      if (view === "grafik") {
+        setActiveTab("Grafik");
+
+        if (date) {
+          setSelectedDate(date);
+          const parsed = new Date(`${date}T12:00:00`);
+          if (!Number.isNaN(parsed.getTime())) {
+            setCalendarYear(parsed.getFullYear());
+            setCalendarMonth(parsed.getMonth());
+          }
+        }
+      }
+
+      if (view === "moje") {
+        setActiveTab("Moje");
+      }
+
+      if (view === "wyjazdy") {
+        setActiveTab("Wyjazdy");
+      }
+
+      if (view === "zadania") {
+        setActiveTab("Zadania");
+      }
+
+      if (view === "more") {
+        setActiveTab("Więcej");
+
+        if (section === "announcements") setMoreSection("announcements");
+        else if (section === "notifications") setMoreSection("notifications");
+        else if (section === "profile") setMoreSection("profile");
+        else if (section === "dues") setMoreSection("dues");
+        else setMoreSection("menu");
+      }
+
+      if (eventId) {
+        const found = events.find(
+          (event) => String(event.id) === String(eventId)
+        );
+
+        if (found) setEventDetails(found);
+      }
+
+      if (clearUrl) {
+        window.history.replaceState(
+          {},
+          "",
+          window.location.pathname
+        );
+      }
+    } catch (error) {
+      console.error("Błąd otwierania linku aplikacji:", error);
+    }
+  }
+
+  useEffect(() => {
+    if (
+      !session ||
+      !role ||
+      deepLinkHandled ||
+      typeof window === "undefined"
+    ) {
+      return;
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    const view = params.get("view");
+    const eventId = params.get("event");
+
+    if (!view) {
+      setDeepLinkHandled(true);
+      return;
+    }
+
+    if (eventId && events.length === 0) {
+      return;
+    }
+
+    applyAppLink(window.location.href, true);
+    setDeepLinkHandled(true);
+  }, [
+    session,
+    role,
+    deepLinkHandled,
+    events,
+    tasks,
+    announcements,
+  ]);
+
+  async function loadMembershipDues() {
+    if (!session?.user) return;
+
+    const { data, error } = await supabase
+      .from("membership_dues")
+      .select(
+        "id,user_id,due_year,due_quarter,paid,paid_at,marked_by,note,created_at,updated_at"
+      )
+      .order("due_year", { ascending: false })
+      .order("due_quarter", { ascending: false });
+
+    if (error) {
+      console.error("Błąd pobierania składek:", error);
+      return;
+    }
+
+    setMembershipDues(data || []);
+  }
+
+  function dueFor(userId, year, quarter) {
+    return membershipDues.find(
+      (item) =>
+        item.user_id === userId &&
+        Number(item.due_year) === Number(year) &&
+        Number(item.due_quarter) === Number(quarter)
+    );
+  }
+
+  async function setDuePaid(userId, year, quarter, paid) {
+    const admin = await verifyAdminAccess();
+
+    if (!admin) {
+      alert("Tylko administrator może zmieniać status składki.");
+      return;
+    }
+
+    setDuesSaving(true);
+
+    try {
+      const row = {
+        user_id: userId,
+        due_year: Number(year),
+        due_quarter: Number(quarter),
+        paid: Boolean(paid),
+        paid_at: paid ? new Date().toISOString() : null,
+        marked_by: session.user.id,
+        updated_at: new Date().toISOString(),
+      };
+
+      const { error } = await supabase
+        .from("membership_dues")
+        .upsert(row, {
+          onConflict: "user_id,due_year,due_quarter",
+        });
+
+      if (error) throw error;
+
+      await loadMembershipDues();
+    } catch (error) {
+      console.error("Błąd zapisu składki:", error);
+      alert(
+        `Nie udało się zmienić statusu składki.\n\n${
+          error?.message || ""
+        }`
+      );
+    } finally {
+      setDuesSaving(false);
+    }
+  }
+
+  async function openNotification(item) {
+    await markNotificationRead(item);
+
+    if (item?.link) {
+      applyAppLink(item.link, false);
+    }
   }
 
   async function loadNotifications() {
@@ -1221,7 +1419,7 @@ export default function Home() {
     ] = await Promise.all([
       supabase
         .from("profiles")
-        .select("id,role,name,full_name,function_title,is_staff,created_at")
+        .select("id,role,name,full_name,function_title,is_staff,membership_number,created_at")
         .order("full_name"),
       supabase
         .from("patrol_members")
@@ -1299,19 +1497,23 @@ export default function Home() {
     setAnnouncementSaving(true);
 
     try {
-      const { error } = await supabase.from("announcements").insert({
-        title: announcementForm.title.trim(),
-        body: announcementForm.body.trim(),
-        whole_troop: announcementForm.audience === "whole",
-        patrol_id:
-          announcementForm.audience === "patrol"
-            ? Number(announcementForm.patrolId)
-            : null,
-        important: announcementForm.important,
-        pinned: announcementForm.pinned,
-        expires_at: announcementForm.expiresAt || null,
-        created_by: session.user.id,
-      });
+      const { data: createdAnnouncement, error } = await supabase
+        .from("announcements")
+        .insert({
+          title: announcementForm.title.trim(),
+          body: announcementForm.body.trim(),
+          whole_troop: announcementForm.audience === "whole",
+          patrol_id:
+            announcementForm.audience === "patrol"
+              ? Number(announcementForm.patrolId)
+              : null,
+          important: announcementForm.important,
+          pinned: announcementForm.pinned,
+          expires_at: announcementForm.expiresAt || null,
+          created_by: session.user.id,
+        })
+        .select("id")
+        .single();
 
       if (error) throw error;
 
@@ -1325,7 +1527,7 @@ export default function Home() {
           announcementForm.audience,
           announcementForm.patrolId
         ),
-        link: "/",
+        link: `/?view=more&section=announcements&announcement=${createdAnnouncement.id}`,
       });
 
       setAnnouncementModalOpen(false);
@@ -1371,6 +1573,7 @@ export default function Home() {
       fullName: profile.full_name || "",
       role: normalizeRole(profile.role || "member"),
       functionTitle: profile.function_title || "",
+      membershipNumber: profile.membership_number || "",
       isStaff: Boolean(profile.is_staff),
       patrolId: membership?.patrol_id ? String(membership.patrol_id) : "",
       leaderPatrolId: leaderPatrol?.id ? String(leaderPatrol.id) : "",
@@ -1395,6 +1598,8 @@ export default function Home() {
           full_name: userEditor.fullName.trim(),
           role: userEditor.role,
           function_title: userEditor.functionTitle.trim() || null,
+          membership_number:
+            userEditor.membershipNumber.trim() || null,
           is_staff: userEditor.isStaff,
         })
         .eq("id", userEditor.id);
@@ -1443,6 +1648,10 @@ export default function Home() {
       await Promise.all([
         loadPeople(),
         loadSchedule(),
+        loadMembershipDues(),
+        userEditor.id === session.user.id
+          ? loadRole(session.user.id)
+          : Promise.resolve(),
       ]);
     } catch (error) {
       console.error("Błąd zapisu użytkownika:", error);
@@ -1505,18 +1714,22 @@ export default function Home() {
     setTaskSaving(true);
 
     try {
-      const { error } = await supabase.from("tasks").insert({
-        title: taskForm.title.trim(),
-        description: taskForm.description.trim() || null,
-        due_date: taskForm.dueDate || null,
-        status: "todo",
-        whole_troop: taskForm.audience === "whole",
-        patrol_id:
-          taskForm.audience === "patrol"
-            ? Number(taskForm.patrolId)
-            : null,
-        created_by: session.user.id,
-      });
+      const { data: createdTask, error } = await supabase
+        .from("tasks")
+        .insert({
+          title: taskForm.title.trim(),
+          description: taskForm.description.trim() || null,
+          due_date: taskForm.dueDate || null,
+          status: "todo",
+          whole_troop: taskForm.audience === "whole",
+          patrol_id:
+            taskForm.audience === "patrol"
+              ? Number(taskForm.patrolId)
+              : null,
+          created_by: session.user.id,
+        })
+        .select("id")
+        .single();
 
       if (error) throw error;
 
@@ -1530,7 +1743,7 @@ export default function Home() {
           taskForm.audience,
           taskForm.patrolId
         ),
-        link: "/",
+        link: `/?view=zadania&task=${createdTask.id}`,
       });
 
       setTaskModalOpen(false);
@@ -1662,7 +1875,9 @@ export default function Home() {
     setMemberships([]);
     setAnnouncements([]);
     setNotifications([]);
+    setMembershipDues([]);
     setPushStatus("unknown");
+    setDeepLinkHandled(false);
     setMyPatrolIds([]);
     setActiveTab("Grafik");
   }
@@ -1892,7 +2107,19 @@ export default function Home() {
           body: `${requesterName} rezerwuje ${reservationName}: ${formatDate(
             selectedDate
           )}, ${form.startTime}–${form.endTime}, ${finalLocation}.`,
-          link: "/",
+          link: `/?view=grafik&date=${selectedDate}`,
+        });
+      } else {
+        await sendPush({
+          kind: "reservation_notice",
+          whole_troop: wholeTroop,
+          patrol_id: patrol?.id || null,
+          requester_user_id: session.user.id,
+          title: `Rezerwacja: ${reservationName}`,
+          body: `${formatDate(selectedDate)}, ${form.startTime}–${
+            form.endTime
+          }, ${finalLocation}. Rezerwuje: ${requesterName}.`,
+          link: `/?view=grafik&date=${selectedDate}`,
         });
       }
 
@@ -1937,15 +2164,15 @@ export default function Home() {
     }
 
     await sendPush({
-      kind: "reservation_approved",
-      target_user_id: reservation.reservedBy,
-      title: "Rezerwacja zatwierdzona",
-      body: `${reservation.patrol}: ${formatDate(
-        reservation.date
-      )}, ${reservation.time}–${reservation.endTime}, ${
-        reservation.location
-      }.`,
-      link: "/",
+      kind: "reservation_notice",
+      whole_troop: !reservation.patrolId,
+      patrol_id: reservation.patrolId || null,
+      requester_user_id: reservation.reservedBy,
+      title: `Rezerwacja zatwierdzona: ${reservation.patrol}`,
+      body: `${formatDate(reservation.date)}, ${reservation.time}–${
+        reservation.endTime
+      }, ${reservation.location}.`,
+      link: `/?view=grafik&date=${reservation.date}`,
     });
 
     await loadSchedule();
@@ -1994,7 +2221,7 @@ export default function Home() {
         reason.trim() ||
         "Rezerwacja odrzucona przez administratora."
       }`,
-      link: "/",
+      link: `/?view=grafik&date=${reservation.date}`,
     });
 
     // Audit zapisuje status "rejected", a następnie zwalniamy termin.
@@ -3521,6 +3748,34 @@ export default function Home() {
                   />
 
                   <MoreMenuButton
+                    icon="👤"
+                    title="Mój profil"
+                    subtitle={
+                      currentProfile?.membership_number
+                        ? `nr ewidencji ${currentProfile.membership_number}`
+                        : "dane członka drużyny"
+                    }
+                    onClick={() => setMoreSection("profile")}
+                  />
+
+                  <MoreMenuButton
+                    icon="💳"
+                    title="Składka członkowska"
+                    subtitle={`${quarterLabel(
+                      quarterForDate()
+                    )} ${new Date().getFullYear()} • ${
+                      dueFor(
+                        session.user.id,
+                        new Date().getFullYear(),
+                        quarterForDate()
+                      )?.paid
+                        ? "opłacona"
+                        : "nieopłacona"
+                    }`}
+                    onClick={() => setMoreSection("dues")}
+                  />
+
+                  <MoreMenuButton
                     icon="⚜️"
                     title="Kadra"
                     subtitle={`${staffPeople.length} osób`}
@@ -3545,6 +3800,257 @@ export default function Home() {
                     }
                   />
                 </div>
+              </>
+            )}
+
+            {moreSection === "profile" && (
+              <>
+                <div style={eyebrowStyle}>Konto w 5 WDH</div>
+                <h2 style={{ marginTop: 5 }}>Mój profil</h2>
+
+                <div style={cardStyle}>
+                  <div
+                    style={{
+                      fontSize: 21,
+                      fontWeight: 900,
+                      marginBottom: 12,
+                    }}
+                  >
+                    {currentProfile?.full_name ||
+                      currentProfile?.name ||
+                      session.user.email}
+                  </div>
+
+                  <div style={{ lineHeight: 1.85, color: "#536159" }}>
+                    <strong>Rola:</strong>{" "}
+                    {roleLabel(currentProfile?.role)}
+                    <br />
+
+                    <strong>Funkcja:</strong>{" "}
+                    {currentProfile?.function_title || "—"}
+                    <br />
+
+                    <strong>Zastęp:</strong>{" "}
+                    {(() => {
+                      const membership = memberships.find(
+                        (item) => item.user_id === session.user.id
+                      );
+                      return (
+                        patrols.find(
+                          (patrol) =>
+                            Number(patrol.id) ===
+                            Number(membership?.patrol_id)
+                        )?.name || "—"
+                      );
+                    })()}
+                    <br />
+
+                    <strong>Numer ewidencji:</strong>{" "}
+                    {currentProfile?.membership_number || "nie wpisano"}
+                  </div>
+
+                  {!currentProfile?.membership_number && (
+                    <div
+                      style={{
+                        marginTop: 12,
+                        background: "#fffaf0",
+                        border: "1px solid #ead8a7",
+                        borderRadius: 12,
+                        padding: 11,
+                        color: "#6f5722",
+                        fontSize: 13,
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      Numer ewidencji może uzupełnić wyłącznie administrator.
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+
+            {moreSection === "dues" && (
+              <>
+                <div style={eyebrowStyle}>Składki członkowskie</div>
+                <h2 style={{ marginTop: 5 }}>Status składek</h2>
+
+                <div
+                  style={{
+                    ...cardStyle,
+                    marginBottom: 14,
+                    borderLeft: dueFor(
+                      session.user.id,
+                      new Date().getFullYear(),
+                      quarterForDate()
+                    )?.paid
+                      ? "5px solid #607b54"
+                      : "5px solid #8b2635",
+                  }}
+                >
+                  <div style={eyebrowStyle}>BIEŻĄCY KWARTAŁ</div>
+                  <h3 style={{ margin: "6px 0" }}>
+                    {quarterLabel(quarterForDate())}{" "}
+                    {new Date().getFullYear()}
+                  </h3>
+
+                  <strong
+                    style={{
+                      color: dueFor(
+                        session.user.id,
+                        new Date().getFullYear(),
+                        quarterForDate()
+                      )?.paid
+                        ? "#315d3e"
+                        : "#8b2635",
+                    }}
+                  >
+                    {dueFor(
+                      session.user.id,
+                      new Date().getFullYear(),
+                      quarterForDate()
+                    )?.paid
+                      ? "✓ OPŁACONA"
+                      : "✕ NIEOPŁACONA"}
+                  </strong>
+                </div>
+
+                <h3>Rok {new Date().getFullYear()}</h3>
+
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gap: 9,
+                    marginBottom: 20,
+                  }}
+                >
+                  {[1, 2, 3, 4].map((quarter) => {
+                    const due = dueFor(
+                      session.user.id,
+                      new Date().getFullYear(),
+                      quarter
+                    );
+
+                    return (
+                      <div
+                        key={`own-due-${quarter}`}
+                        style={{
+                          ...cardStyle,
+                          boxShadow: "none",
+                          padding: 12,
+                          border: due?.paid
+                            ? "1px solid #a9bbaa"
+                            : "1px solid #e1d0d2",
+                          background: due?.paid
+                            ? "#f1f7f2"
+                            : "#fff8f8",
+                        }}
+                      >
+                        <strong>{quarterLabel(quarter)}</strong>
+                        <div
+                          style={{
+                            marginTop: 6,
+                            fontSize: 12,
+                            fontWeight: 900,
+                            color: due?.paid
+                              ? "#315d3e"
+                              : "#8b2635",
+                          }}
+                        >
+                          {due?.paid ? "OPŁACONA" : "NIEOPŁACONA"}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {isAdmin && (
+                  <>
+                    <div style={eyebrowStyle}>PANEL ADMINA</div>
+                    <h3
+                      style={{
+                        marginTop: 5,
+                        marginBottom: 10,
+                      }}
+                    >
+                      {quarterLabel(quarterForDate())}{" "}
+                      {new Date().getFullYear()} — drużyna
+                    </h3>
+
+                    <div style={{ display: "grid", gap: 9 }}>
+                      {people
+                        .filter(
+                          (person) =>
+                            normalizeRole(person.role) !== "parent"
+                        )
+                        .map((person) => {
+                          const due = dueFor(
+                            person.id,
+                            new Date().getFullYear(),
+                            quarterForDate()
+                          );
+
+                          return (
+                            <div
+                              key={`admin-due-${person.id}`}
+                              style={{
+                                ...cardStyle,
+                                boxShadow: "none",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                gap: 10,
+                              }}
+                            >
+                              <div>
+                                <strong>
+                                  {person.full_name ||
+                                    person.name ||
+                                    "Użytkownik"}
+                                </strong>
+
+                                <div
+                                  style={{
+                                    marginTop: 4,
+                                    fontSize: 12,
+                                    fontWeight: 800,
+                                    color: due?.paid
+                                      ? "#315d3e"
+                                      : "#8b2635",
+                                  }}
+                                >
+                                  {due?.paid
+                                    ? "OPŁACONA"
+                                    : "NIEOPŁACONA"}
+                                </div>
+                              </div>
+
+                              <button
+                                style={
+                                  due?.paid
+                                    ? secondaryStyle
+                                    : primaryStyle
+                                }
+                                disabled={duesSaving}
+                                onClick={() =>
+                                  setDuePaid(
+                                    person.id,
+                                    new Date().getFullYear(),
+                                    quarterForDate(),
+                                    !due?.paid
+                                  )
+                                }
+                              >
+                                {due?.paid
+                                  ? "Cofnij"
+                                  : "Oznacz opłaconą"}
+                              </button>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  </>
+                )}
               </>
             )}
 
@@ -3611,7 +4117,7 @@ export default function Home() {
                             kind: "test",
                             title: "Test 5 WDH",
                             body: "Powiadomienia działają 🎉",
-                            link: "/",
+                            link: "/?view=more&section=notifications",
                           })
                         }
                       >
@@ -3648,7 +4154,7 @@ export default function Home() {
                     {notifications.map((item) => (
                       <button
                         key={`notification-${item.id}`}
-                        onClick={() => markNotificationRead(item)}
+                        onClick={() => openNotification(item)}
                         style={{
                           ...cardStyle,
                           border: 0,
@@ -3952,6 +4458,9 @@ export default function Home() {
                               {leaderPatrol
                                 ? ` • zastępowy/a ${leaderPatrol.name}`
                                 : ""}
+                              {person.membership_number
+                                ? ` • nr ${person.membership_number}`
+                                : ""}
                             </div>
                           </div>
 
@@ -4169,6 +4678,30 @@ export default function Home() {
                 }
                 style={inputStyle}
               />
+            </label>
+
+            <label>
+              <strong>Numer ewidencji</strong>
+              <input
+                value={userEditor.membershipNumber}
+                onChange={(event) =>
+                  setUserEditor({
+                    ...userEditor,
+                    membershipNumber: event.target.value,
+                  })
+                }
+                placeholder="np. numer z ewidencji ZHP"
+                style={inputStyle}
+              />
+              <div
+                style={{
+                  marginTop: 6,
+                  fontSize: 12,
+                  color: "#6d7771",
+                }}
+              >
+                To pole może zmienić tylko administrator.
+              </div>
             </label>
 
             <label>
