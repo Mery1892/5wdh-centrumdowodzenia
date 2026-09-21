@@ -328,6 +328,10 @@ export default function Home() {
   const [myPatrolIds, setMyPatrolIds] = useState([]);
 
   const [tasks, setTasks] = useState([]);
+  const [taskChatTask, setTaskChatTask] = useState(null);
+  const [taskMessages, setTaskMessages] = useState([]);
+  const [taskMessageText, setTaskMessageText] = useState("");
+  const [taskMessageSaving, setTaskMessageSaving] = useState(false);
 
   const [people, setPeople] = useState([]);
   const [memberships, setMemberships] = useState([]);
@@ -337,6 +341,18 @@ export default function Home() {
   const [pushBusy, setPushBusy] = useState(false);
   const [membershipDues, setMembershipDues] = useState([]);
   const [duesSaving, setDuesSaving] = useState(false);
+  const [parentChildren, setParentChildren] = useState([]);
+  const [documents, setDocuments] = useState([]);
+  const [documentModalOpen, setDocumentModalOpen] = useState(false);
+  const [documentSaving, setDocumentSaving] = useState(false);
+  const [documentForm, setDocumentForm] = useState({
+    title: "",
+    description: "",
+    audienceType: "members",
+    patrolId: "",
+    targetUserId: "",
+    file: null,
+  });
   const [duesViewYear, setDuesViewYear] = useState(new Date().getFullYear());
   const [adminDueYear, setAdminDueYear] = useState(new Date().getFullYear());
   const [adminDueQuarter, setAdminDueQuarter] = useState(quarterForDate());
@@ -432,6 +448,8 @@ export default function Home() {
       loadAnnouncements();
       loadNotifications();
       loadMembershipDues();
+      loadParentChildren();
+      loadDocuments();
       checkPushStatus();
 
       if (role !== "parent") {
@@ -440,6 +458,16 @@ export default function Home() {
       }
     }
   }, [session, role]);
+
+  useEffect(() => {
+    if (!taskChatTask?.id) return;
+
+    const timer = window.setInterval(() => {
+      loadTaskMessages(taskChatTask.id);
+    }, 5000);
+
+    return () => window.clearInterval(timer);
+  }, [taskChatTask?.id]);
 
   async function checkSession() {
     const {
@@ -1032,6 +1060,7 @@ export default function Home() {
       const section = (url.searchParams.get("section") || "").toLowerCase();
       const date = url.searchParams.get("date");
       const eventId = url.searchParams.get("event");
+      const taskId = url.searchParams.get("task");
 
       if (view === "grafik") {
         setActiveTab("Grafik");
@@ -1056,6 +1085,17 @@ export default function Home() {
 
       if (view === "zadania") {
         setActiveTab("Zadania");
+
+        if (taskId) {
+          const task = tasks.find(
+            (item) => String(item.id) === String(taskId)
+          );
+
+          if (task) {
+            setTaskChatTask(task);
+            loadTaskMessages(task.id);
+          }
+        }
       }
 
       if (view === "more") {
@@ -1198,6 +1238,312 @@ export default function Home() {
     if (item?.link) {
       applyAppLink(item.link, false);
     }
+  }
+
+  async function loadParentChildren() {
+    if (!session?.user) return;
+
+    const { data, error } = await supabase
+      .from("parent_children")
+      .select("id,parent_id,child_id,created_at")
+      .order("created_at");
+
+    if (error) {
+      console.error("Błąd pobierania powiązań rodzic-dziecko:", error);
+      return;
+    }
+
+    setParentChildren(data || []);
+  }
+
+  async function loadDocuments() {
+    if (!session?.user) return;
+
+    const { data, error } = await supabase
+      .from("documents")
+      .select(
+        "id,title,description,file_name,file_path,mime_type,file_size,audience_type,patrol_id,target_user_id,uploaded_by,created_at"
+      )
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("Błąd pobierania dokumentów:", error);
+      return;
+    }
+
+    setDocuments(data || []);
+  }
+
+  async function openDocument(documentItem) {
+    try {
+      const { data, error } = await supabase.storage
+        .from("documents")
+        .createSignedUrl(documentItem.file_path, 120);
+
+      if (error) throw error;
+
+      if (!data?.signedUrl) {
+        throw new Error("Nie udało się utworzyć linku do dokumentu.");
+      }
+
+      window.open(data.signedUrl, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      console.error("Błąd otwierania dokumentu:", error);
+      alert(`Nie udało się otworzyć dokumentu.\n\n${error?.message || ""}`);
+    }
+  }
+
+  function openDocumentForm() {
+    const myLeaderPatrols = patrols.filter(
+      (patrol) => patrol.leader_id === session?.user?.id
+    );
+
+    setDocumentForm({
+      title: "",
+      description: "",
+      audienceType: isAdmin ? "members" : "patrol",
+      patrolId:
+        !isAdmin && myLeaderPatrols[0]?.id
+          ? String(myLeaderPatrols[0].id)
+          : patrols[0]?.id
+          ? String(patrols[0].id)
+          : "",
+      targetUserId: "",
+      file: null,
+    });
+
+    setDocumentModalOpen(true);
+  }
+
+  async function saveDocument() {
+    if (!session?.user) return;
+
+    if (!documentForm.title.trim()) {
+      alert("Wpisz nazwę dokumentu.");
+      return;
+    }
+
+    if (!documentForm.file) {
+      alert("Wybierz plik.");
+      return;
+    }
+
+    const admin = await verifyAdminAccess();
+    const leaderPatrols = patrols.filter(
+      (patrol) => patrol.leader_id === session.user.id
+    );
+
+    const leaderPatrolIds = leaderPatrols.map((patrol) => Number(patrol.id));
+    const selectedPatrolId = documentForm.patrolId
+      ? Number(documentForm.patrolId)
+      : null;
+
+    if (!admin) {
+      if (
+        documentForm.audienceType !== "patrol" ||
+        !selectedPatrolId ||
+        !leaderPatrolIds.includes(selectedPatrolId)
+      ) {
+        alert("Zastępowy może wrzucać dokumenty wyłącznie dla własnego zastępu.");
+        return;
+      }
+    }
+
+    if (
+      ["patrol", "patrol_leaders"].includes(documentForm.audienceType) &&
+      !selectedPatrolId
+    ) {
+      alert("Wybierz zastęp.");
+      return;
+    }
+
+    if (
+      documentForm.audienceType === "user" &&
+      !documentForm.targetUserId
+    ) {
+      alert("Wybierz użytkownika.");
+      return;
+    }
+
+    setDocumentSaving(true);
+
+    let uploadedPath = null;
+
+    try {
+      const safeFileName = documentForm.file.name
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-zA-Z0-9._-]/g, "_");
+
+      const unique = `${Date.now()}-${crypto.randomUUID()}`;
+      const path = admin
+        ? `admin/${unique}-${safeFileName}`
+        : `patrol/${selectedPatrolId}/${unique}-${safeFileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from("documents")
+        .upload(path, documentForm.file, {
+          upsert: false,
+          contentType:
+            documentForm.file.type || "application/octet-stream",
+        });
+
+      if (uploadError) throw uploadError;
+
+      uploadedPath = path;
+
+      const { error: insertError } = await supabase
+        .from("documents")
+        .insert({
+          title: documentForm.title.trim(),
+          description: documentForm.description.trim() || null,
+          file_name: documentForm.file.name,
+          file_path: path,
+          mime_type: documentForm.file.type || null,
+          file_size: documentForm.file.size || null,
+          audience_type: admin
+            ? documentForm.audienceType
+            : "patrol",
+          patrol_id:
+            ["patrol", "patrol_leaders"].includes(
+              admin ? documentForm.audienceType : "patrol"
+            )
+              ? selectedPatrolId
+              : null,
+          target_user_id:
+            admin && documentForm.audienceType === "user"
+              ? documentForm.targetUserId
+              : null,
+          uploaded_by: session.user.id,
+        });
+
+      if (insertError) throw insertError;
+
+      setDocumentModalOpen(false);
+      await loadDocuments();
+    } catch (error) {
+      console.error("Błąd zapisu dokumentu:", error);
+
+      if (uploadedPath) {
+        await supabase.storage
+          .from("documents")
+          .remove([uploadedPath]);
+      }
+
+      alert(`Nie udało się dodać dokumentu.\n\n${error?.message || ""}`);
+    } finally {
+      setDocumentSaving(false);
+    }
+  }
+
+  async function deleteDocument(documentItem) {
+    const admin = await verifyAdminAccess();
+
+    if (!admin) {
+      alert("Usuwanie dokumentów jest dostępne dla administratora.");
+      return;
+    }
+
+    if (!window.confirm(`Usunąć dokument „${documentItem.title}”?`)) {
+      return;
+    }
+
+    const { error: storageError } = await supabase.storage
+      .from("documents")
+      .remove([documentItem.file_path]);
+
+    if (storageError) {
+      console.error("Błąd usuwania pliku:", storageError);
+    }
+
+    const { error } = await supabase
+      .from("documents")
+      .delete()
+      .eq("id", documentItem.id);
+
+    if (error) {
+      alert(`Nie udało się usunąć dokumentu.\n\n${error.message}`);
+      return;
+    }
+
+    await loadDocuments();
+  }
+
+  async function loadTaskMessages(taskId) {
+    if (!taskId) return;
+
+    const { data, error } = await supabase
+      .from("task_messages")
+      .select("id,task_id,user_id,message,created_at,edited_at")
+      .eq("task_id", taskId)
+      .order("created_at");
+
+    if (error) {
+      console.error("Błąd pobierania czatu:", error);
+      return;
+    }
+
+    setTaskMessages(data || []);
+  }
+
+  async function openTaskChat(task) {
+    setTaskChatTask(task);
+    setTaskMessageText("");
+    await loadTaskMessages(task.id);
+  }
+
+  async function sendTaskMessage() {
+    if (!session?.user || !taskChatTask) return;
+
+    const message = taskMessageText.trim();
+
+    if (!message) return;
+
+    setTaskMessageSaving(true);
+
+    try {
+      const { error } = await supabase
+        .from("task_messages")
+        .insert({
+          task_id: taskChatTask.id,
+          user_id: session.user.id,
+          message,
+        });
+
+      if (error) throw error;
+
+      setTaskMessageText("");
+      await loadTaskMessages(taskChatTask.id);
+    } catch (error) {
+      console.error("Błąd wysyłania wiadomości:", error);
+      alert(`Nie udało się wysłać wiadomości.\n\n${error?.message || ""}`);
+    } finally {
+      setTaskMessageSaving(false);
+    }
+  }
+
+  async function deleteTaskMessage(message) {
+    if (!message?.id) return;
+
+    const mine = message.user_id === session?.user?.id;
+
+    if (!mine && !isAdmin) {
+      return;
+    }
+
+    if (!window.confirm("Usunąć tę wiadomość?")) return;
+
+    const { error } = await supabase
+      .from("task_messages")
+      .delete()
+      .eq("id", message.id);
+
+    if (error) {
+      alert(`Nie udało się usunąć wiadomości.\n\n${error.message}`);
+      return;
+    }
+
+    await loadTaskMessages(taskChatTask.id);
   }
 
   async function loadNotifications() {
@@ -1587,6 +1933,9 @@ export default function Home() {
       isStaff: Boolean(profile.is_staff),
       patrolId: membership?.patrol_id ? String(membership.patrol_id) : "",
       leaderPatrolId: leaderPatrol?.id ? String(leaderPatrol.id) : "",
+      childIds: parentChildren
+        .filter((link) => link.parent_id === profile.id)
+        .map((link) => link.child_id),
     });
   }
 
@@ -1663,12 +2012,36 @@ export default function Home() {
         if (leaderError) throw leaderError;
       }
 
+      const { error: clearChildrenError } = await supabase
+        .from("parent_children")
+        .delete()
+        .eq("parent_id", userEditor.id);
+
+      if (clearChildrenError) throw clearChildrenError;
+
+      if (
+        userEditor.role === "parent" &&
+        userEditor.childIds?.length
+      ) {
+        const { error: childrenError } = await supabase
+          .from("parent_children")
+          .insert(
+            userEditor.childIds.map((childId) => ({
+              parent_id: userEditor.id,
+              child_id: childId,
+            }))
+          );
+
+        if (childrenError) throw childrenError;
+      }
+
       setUserEditor(null);
 
       await Promise.all([
         loadPeople(),
         loadSchedule(),
         loadMembershipDues(),
+        loadParentChildren(),
         userEditor.id === session.user.id
           ? loadRole(session.user.id)
           : Promise.resolve(),
@@ -1896,6 +2269,10 @@ export default function Home() {
     setAnnouncements([]);
     setNotifications([]);
     setMembershipDues([]);
+    setParentChildren([]);
+    setDocuments([]);
+    setTaskMessages([]);
+    setTaskChatTask(null);
     setPushStatus("unknown");
     setDeepLinkHandled(false);
     setMyPatrolIds([]);
@@ -2341,6 +2718,14 @@ export default function Home() {
         events={events}
         eventAssignments={eventAssignments}
         people={people}
+        patrols={patrols}
+        memberships={memberships}
+        parentChildren={parentChildren}
+        membershipDues={membershipDues}
+        announcements={announcements}
+        documents={documents}
+        currentUserId={session.user.id}
+        openDocument={openDocument}
         pushStatus={pushStatus}
         pushBusy={pushBusy}
         enablePushNotifications={enablePushNotifications}
@@ -3683,15 +4068,23 @@ export default function Home() {
                         </div>
                       )}
 
-                      {isAdmin && (
-                        <div
-                          style={{
-                            display: "flex",
-                            gap: 8,
-                            marginTop: 13,
-                            flexWrap: "wrap",
-                          }}
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: 8,
+                          marginTop: 13,
+                          flexWrap: "wrap",
+                        }}
+                      >
+                        <button
+                          style={primaryStyle}
+                          onClick={() => openTaskChat(task)}
                         >
+                          💬 Czat
+                        </button>
+
+                      {isAdmin && (
+                        <>
                           {task.status !== "done" ? (
                             <button
                               style={secondaryStyle}
@@ -3722,8 +4115,9 @@ export default function Home() {
                           >
                             Usuń
                           </button>
-                        </div>
+                        </>
                       )}
+                      </div>
                     </div>
                   );
                 })}
@@ -3817,12 +4211,138 @@ export default function Home() {
                   <MoreMenuButton
                     icon="📄"
                     title="Dokumenty"
-                    subtitle="zgody, regulaminy, pliki"
-                    onClick={() =>
-                      alert("Dokumenty dołączymy w kolejnym dużym update.")
-                    }
+                    subtitle={`${documents.length} plików dostępnych dla Ciebie`}
+                    onClick={() => setMoreSection("documents")}
                   />
                 </div>
+              </>
+            )}
+
+            {moreSection === "documents" && (
+              <>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: 10,
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <div>
+                    <div style={eyebrowStyle}>Pliki drużyny</div>
+                    <h2 style={{ marginTop: 5 }}>Dokumenty</h2>
+                  </div>
+
+                  {(isAdmin ||
+                    patrols.some(
+                      (patrol) =>
+                        patrol.leader_id === session.user.id
+                    )) && (
+                    <button
+                      style={primaryStyle}
+                      onClick={openDocumentForm}
+                    >
+                      + Dodaj dokument
+                    </button>
+                  )}
+                </div>
+
+                {documents.length === 0 ? (
+                  <div
+                    style={{
+                      ...cardStyle,
+                      color: "#68736d",
+                    }}
+                  >
+                    Brak dokumentów dostępnych dla Twojego konta.
+                  </div>
+                ) : (
+                  <div style={{ display: "grid", gap: 10 }}>
+                    {documents.map((item) => {
+                      const patrol = patrols.find(
+                        (p) => Number(p.id) === Number(item.patrol_id)
+                      );
+
+                      const audienceLabel =
+                        item.audience_type === "parents"
+                          ? "DLA RODZICÓW"
+                          : item.audience_type === "members"
+                          ? "DLA HARCERZY"
+                          : item.audience_type === "patrol"
+                          ? `ZASTĘP • ${patrol?.name || ""}`
+                          : item.audience_type === "patrol_leaders"
+                          ? `ZASTĘPOWI • ${patrol?.name || ""}`
+                          : item.audience_type === "user"
+                          ? "DLA KONKRETNEJ OSOBY"
+                          : "DLA WSZYSTKICH";
+
+                      return (
+                        <div
+                          key={`doc-${item.id}`}
+                          style={cardStyle}
+                        >
+                          <div style={eyebrowStyle}>
+                            {audienceLabel}
+                          </div>
+
+                          <h3 style={{ margin: "6px 0" }}>
+                            {item.title}
+                          </h3>
+
+                          {item.description && (
+                            <p
+                              style={{
+                                color: "#59675f",
+                                lineHeight: 1.55,
+                              }}
+                            >
+                              {item.description}
+                            </p>
+                          )}
+
+                          <div
+                            style={{
+                              color: "#7a837e",
+                              fontSize: 12,
+                              marginBottom: 10,
+                            }}
+                          >
+                            📎 {item.file_name}
+                          </div>
+
+                          <div
+                            style={{
+                              display: "flex",
+                              gap: 8,
+                              flexWrap: "wrap",
+                            }}
+                          >
+                            <button
+                              style={primaryStyle}
+                              onClick={() => openDocument(item)}
+                            >
+                              Otwórz
+                            </button>
+
+                            {isAdmin && (
+                              <button
+                                style={{
+                                  ...secondaryStyle,
+                                  color: "#8b2635",
+                                  borderColor: "#dfc1c5",
+                                }}
+                                onClick={() => deleteDocument(item)}
+                              >
+                                Usuń
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </>
             )}
 
@@ -4832,6 +5352,338 @@ export default function Home() {
         </ModalBackground>
       )}
 
+      {documentModalOpen && (
+        <ModalBackground
+          close={() =>
+            !documentSaving && setDocumentModalOpen(false)
+          }
+        >
+          <div style={eyebrowStyle}>Dokumenty</div>
+          <h2 style={{ marginTop: 5 }}>Dodaj dokument</h2>
+
+          <div style={{ display: "grid", gap: 14 }}>
+            <label>
+              <strong>Nazwa dokumentu</strong>
+              <input
+                value={documentForm.title}
+                onChange={(event) =>
+                  setDocumentForm({
+                    ...documentForm,
+                    title: event.target.value,
+                  })
+                }
+                placeholder="np. Zgoda na biwak"
+                style={inputStyle}
+              />
+            </label>
+
+            <label>
+              <strong>Opis</strong>
+              <textarea
+                value={documentForm.description}
+                onChange={(event) =>
+                  setDocumentForm({
+                    ...documentForm,
+                    description: event.target.value,
+                  })
+                }
+                rows={3}
+                style={{
+                  ...inputStyle,
+                  fontFamily: "inherit",
+                  resize: "vertical",
+                }}
+              />
+            </label>
+
+            {isAdmin ? (
+              <label>
+                <strong>Dla kogo?</strong>
+                <select
+                  value={documentForm.audienceType}
+                  onChange={(event) =>
+                    setDocumentForm({
+                      ...documentForm,
+                      audienceType: event.target.value,
+                    })
+                  }
+                  style={inputStyle}
+                >
+                  <option value="all">Wszyscy</option>
+                  <option value="parents">Rodzice</option>
+                  <option value="members">Harcerze</option>
+                  <option value="patrol">Konkretny zastęp</option>
+                  <option value="patrol_leaders">
+                    Zastępowi konkretnego zastępu
+                  </option>
+                  <option value="user">Konkretna osoba</option>
+                </select>
+              </label>
+            ) : (
+              <div
+                style={{
+                  ...cardStyle,
+                  boxShadow: "none",
+                  background: "#f1f7f2",
+                }}
+              >
+                Jako zastępowy możesz dodać dokument dla swojego zastępu.
+              </div>
+            )}
+
+            {(documentForm.audienceType === "patrol" ||
+              documentForm.audienceType === "patrol_leaders" ||
+              !isAdmin) && (
+              <label>
+                <strong>Zastęp</strong>
+                <select
+                  value={documentForm.patrolId}
+                  onChange={(event) =>
+                    setDocumentForm({
+                      ...documentForm,
+                      patrolId: event.target.value,
+                    })
+                  }
+                  style={inputStyle}
+                >
+                  {(isAdmin
+                    ? patrols
+                    : patrols.filter(
+                        (patrol) =>
+                          patrol.leader_id === session.user.id
+                      )
+                  ).map((patrol) => (
+                    <option
+                      key={`doc-patrol-${patrol.id}`}
+                      value={String(patrol.id)}
+                    >
+                      {patrol.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+
+            {isAdmin &&
+              documentForm.audienceType === "user" && (
+                <label>
+                  <strong>Użytkownik</strong>
+                  <select
+                    value={documentForm.targetUserId}
+                    onChange={(event) =>
+                      setDocumentForm({
+                        ...documentForm,
+                        targetUserId: event.target.value,
+                      })
+                    }
+                    style={inputStyle}
+                  >
+                    <option value="">Wybierz osobę</option>
+                    {people.map((person) => (
+                      <option
+                        key={`doc-person-${person.id}`}
+                        value={person.id}
+                      >
+                        {person.full_name ||
+                          person.name ||
+                          "Użytkownik"}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+
+            <label>
+              <strong>Plik</strong>
+              <input
+                type="file"
+                onChange={(event) =>
+                  setDocumentForm({
+                    ...documentForm,
+                    file: event.target.files?.[0] || null,
+                  })
+                }
+                style={inputStyle}
+              />
+            </label>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 9,
+              }}
+            >
+              <button
+                style={secondaryStyle}
+                disabled={documentSaving}
+                onClick={() => setDocumentModalOpen(false)}
+              >
+                Anuluj
+              </button>
+
+              <button
+                style={primaryStyle}
+                disabled={documentSaving}
+                onClick={saveDocument}
+              >
+                {documentSaving ? "Wysyłam..." : "Dodaj plik"}
+              </button>
+            </div>
+          </div>
+        </ModalBackground>
+      )}
+
+      {taskChatTask && (
+        <ModalBackground
+          close={() => setTaskChatTask(null)}
+        >
+          <div style={eyebrowStyle}>Czat do zadania</div>
+          <h2 style={{ marginTop: 5 }}>
+            {taskChatTask.title}
+          </h2>
+
+          <div
+            style={{
+              maxHeight: "48vh",
+              overflowY: "auto",
+              display: "grid",
+              gap: 8,
+              margin: "12px 0",
+              paddingRight: 3,
+            }}
+          >
+            {taskMessages.length === 0 ? (
+              <div
+                style={{
+                  ...cardStyle,
+                  boxShadow: "none",
+                  color: "#6c756f",
+                }}
+              >
+                Jeszcze nikt nic nie napisał. Zacznij rozmowę.
+              </div>
+            ) : (
+              taskMessages.map((message) => {
+                const author = people.find(
+                  (person) => person.id === message.user_id
+                );
+
+                const mine =
+                  message.user_id === session.user.id;
+
+                return (
+                  <div
+                    key={`message-${message.id}`}
+                    style={{
+                      ...cardStyle,
+                      boxShadow: "none",
+                      background: mine ? "#f1f7f2" : "#f7f5ee",
+                      marginLeft: mine ? 24 : 0,
+                      marginRight: mine ? 0 : 24,
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        gap: 8,
+                        alignItems: "center",
+                      }}
+                    >
+                      <strong style={{ fontSize: 13 }}>
+                        {author?.full_name ||
+                          author?.name ||
+                          "Użytkownik"}
+                      </strong>
+
+                      <span
+                        style={{
+                          fontSize: 10,
+                          color: "#89918c",
+                        }}
+                      >
+                        {new Date(
+                          message.created_at
+                        ).toLocaleString("pl-PL")}
+                      </span>
+                    </div>
+
+                    <div
+                      style={{
+                        marginTop: 7,
+                        lineHeight: 1.55,
+                        whiteSpace: "pre-wrap",
+                      }}
+                    >
+                      {message.message}
+                    </div>
+
+                    {(mine || isAdmin) && (
+                      <button
+                        style={{
+                          border: 0,
+                          background: "transparent",
+                          color: "#8b2635",
+                          padding: "7px 0 0",
+                          cursor: "pointer",
+                          fontSize: 11,
+                        }}
+                        onClick={() =>
+                          deleteTaskMessage(message)
+                        }
+                      >
+                        Usuń
+                      </button>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          <textarea
+            value={taskMessageText}
+            onChange={(event) =>
+              setTaskMessageText(event.target.value)
+            }
+            placeholder="Napisz wiadomość..."
+            rows={3}
+            style={{
+              ...inputStyle,
+              fontFamily: "inherit",
+              resize: "vertical",
+            }}
+          />
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: 9,
+              marginTop: 10,
+            }}
+          >
+            <button
+              style={secondaryStyle}
+              onClick={() => setTaskChatTask(null)}
+            >
+              Zamknij
+            </button>
+
+            <button
+              style={primaryStyle}
+              disabled={
+                taskMessageSaving || !taskMessageText.trim()
+              }
+              onClick={sendTaskMessage}
+            >
+              {taskMessageSaving ? "Wysyłam..." : "Wyślij"}
+            </button>
+          </div>
+        </ModalBackground>
+      )}
+
       {userEditor && (
         <ModalBackground
           close={() => !userSaving && setUserEditor(null)}
@@ -4895,6 +5747,80 @@ export default function Home() {
                 <option value="admin">Admin</option>
               </select>
             </label>
+
+            {userEditor.role === "parent" && (
+              <div
+                style={{
+                  ...cardStyle,
+                  boxShadow: "none",
+                  background: "#f7f5ee",
+                }}
+              >
+                <strong>Przypisane dzieci</strong>
+
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: "#6c756f",
+                    marginTop: 4,
+                    marginBottom: 10,
+                  }}
+                >
+                  Rodzic zobaczy informacje dotyczące zaznaczonych osób.
+                </div>
+
+                <div style={{ display: "grid", gap: 8 }}>
+                  {people
+                    .filter(
+                      (person) =>
+                        person.id !== userEditor.id &&
+                        normalizeRole(person.role) !== "parent"
+                    )
+                    .map((person) => {
+                      const checked =
+                        userEditor.childIds?.includes(person.id) || false;
+
+                      return (
+                        <label
+                          key={`child-${person.id}`}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 9,
+                            cursor: "pointer",
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(event) => {
+                              const next = event.target.checked
+                                ? [
+                                    ...(userEditor.childIds || []),
+                                    person.id,
+                                  ]
+                                : (userEditor.childIds || []).filter(
+                                    (id) => id !== person.id
+                                  );
+
+                              setUserEditor({
+                                ...userEditor,
+                                childIds: next,
+                              });
+                            }}
+                          />
+
+                          <span>
+                            {person.full_name ||
+                              person.name ||
+                              "Użytkownik"}
+                          </span>
+                        </label>
+                      );
+                    })}
+                </div>
+              </div>
+            )}
 
             <label>
               <strong>Funkcja</strong>
@@ -6454,47 +7380,142 @@ function ParentApp({
   events = [],
   eventAssignments = [],
   people = [],
+  patrols = [],
+  memberships = [],
+  parentChildren = [],
+  membershipDues = [],
+  announcements = [],
+  documents = [],
+  currentUserId,
+  openDocument,
   pushStatus,
   pushBusy,
   enablePushNotifications,
   disablePushNotifications,
 }) {
   const [tab, setTab] = useState("Moje");
+  const [selectedChildId, setSelectedChildId] = useState("");
   const today = dateToString(new Date());
 
-  const trips = events
-    .filter(
-      (event) =>
-        isTripType(event.event_type) &&
-        event.event_date >= today
+  const childIds = parentChildren
+    .filter((link) => link.parent_id === currentUserId)
+    .map((link) => link.child_id);
+
+  const children = people.filter((person) =>
+    childIds.includes(person.id)
+  );
+
+  useEffect(() => {
+    if (!selectedChildId && children[0]?.id) {
+      setSelectedChildId(children[0].id);
+    }
+
+    if (
+      selectedChildId &&
+      !children.some((child) => child.id === selectedChildId)
+    ) {
+      setSelectedChildId(children[0]?.id || "");
+    }
+  }, [children.map((child) => child.id).join("|"), selectedChildId]);
+
+  const child =
+    children.find((item) => item.id === selectedChildId) ||
+    children[0] ||
+    null;
+
+  const childMembership = child
+    ? memberships.find((item) => item.user_id === child.id)
+    : null;
+
+  const childPatrol = patrols.find(
+    (patrol) =>
+      Number(patrol.id) === Number(childMembership?.patrol_id)
+  );
+
+  const childAssignments = child
+    ? eventAssignments.filter(
+        (assignment) => assignment.user_id === child.id
+      )
+    : [];
+
+  const assignedEventIds = new Set(
+    childAssignments.map((assignment) =>
+      Number(assignment.event_id)
     )
-    .sort((a, b) =>
-      `${a.event_date}T${normalizeTime(a.start_time)}`.localeCompare(
-        `${b.event_date}T${normalizeTime(b.start_time)}`
+  );
+
+  const childEvents = child
+    ? events
+        .filter((event) => {
+          if (event.event_date < today) return false;
+
+          if (event.whole_troop) return true;
+
+          if (
+            childPatrol &&
+            Number(event.patrol_id) === Number(childPatrol.id)
+          ) {
+            return true;
+          }
+
+          return assignedEventIds.has(Number(event.id));
+        })
+        .sort((a, b) =>
+          `${a.event_date}T${normalizeTime(a.start_time)}`.localeCompare(
+            `${b.event_date}T${normalizeTime(b.start_time)}`
+          )
+        )
+    : [];
+
+  const childTrips = childEvents.filter((event) =>
+    isTripType(event.event_type)
+  );
+
+  const childAnnouncements = child
+    ? announcements.filter(
+        (item) =>
+          item.whole_troop ||
+          (childPatrol &&
+            Number(item.patrol_id) === Number(childPatrol.id))
       )
+    : [];
+
+  function childDue(year, quarter) {
+    if (!child) return null;
+
+    return membershipDues.find(
+      (item) =>
+        item.user_id === child.id &&
+        Number(item.due_year) === Number(year) &&
+        Number(item.due_quarter) === Number(quarter)
     );
+  }
 
-  function parentRoster(eventId) {
-    return eventAssignments
-      .filter(
-        (item) => Number(item.event_id) === Number(eventId)
-      )
-      .map((item) => {
-        const person = people.find(
-          (profile) => profile.id === item.user_id
-        );
+  function childIsAssigned(eventId) {
+    return assignedEventIds.has(Number(eventId));
+  }
 
-        return {
-          ...item,
-          personName:
-            person?.full_name ||
-            person?.name ||
-            "Użytkownik",
-        };
-      })
-      .sort((a, b) =>
-        a.personName.localeCompare(b.personName, "pl")
-      );
+  if (children.length === 0) {
+    return (
+      <main style={appStyle}>
+        <AppHeader
+          subtitle="Strefa rodzica"
+          logout={logout}
+        />
+
+        <section style={containerPadding}>
+          <div style={eyebrowStyle}>Panel rodzica</div>
+          <h2 style={{ marginTop: 5 }}>
+            Brak przypisanego dziecka
+          </h2>
+
+          <div style={cardStyle}>
+            Administrator musi najpierw przypisać Twoje konto rodzica
+            do harcerza w panelu użytkowników.
+          </div>
+        </section>
+      </main>
+    );
   }
 
   return (
@@ -6505,10 +7526,55 @@ function ParentApp({
       />
 
       <section style={containerPadding}>
+        <label
+          style={{
+            display: "block",
+            marginBottom: 16,
+          }}
+        >
+          <strong>Moje dziecko</strong>
+
+          <select
+            value={child?.id || ""}
+            onChange={(event) =>
+              setSelectedChildId(event.target.value)
+            }
+            style={inputStyle}
+          >
+            {children.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.full_name || item.name || "Harcerz"}
+              </option>
+            ))}
+          </select>
+        </label>
+
         {tab === "Moje" && (
           <>
             <div style={eyebrowStyle}>
               Najważniejsze informacje
+            </div>
+
+            <h2 style={{ marginTop: 5 }}>
+              {child?.full_name || child?.name}
+            </h2>
+
+            <div
+              style={{
+                ...cardStyle,
+                marginBottom: 14,
+              }}
+            >
+              <div style={{ lineHeight: 1.8 }}>
+                <strong>Zastęp:</strong>{" "}
+                {childPatrol?.name || "brak przypisania"}
+                <br />
+                <strong>Funkcja:</strong>{" "}
+                {child?.function_title || "—"}
+                <br />
+                <strong>Numer ewidencji:</strong>{" "}
+                {child?.membership_number || "—"}
+              </div>
             </div>
 
             {pushStatus !== "enabled" && (
@@ -6528,8 +7594,8 @@ function ParentApp({
                     lineHeight: 1.5,
                   }}
                 >
-                  Dzięki nim dostaniesz informację o zmianach,
-                  wyjazdach i ważnych komunikatach.
+                  Dostaniesz informacje o zmianach, wyjazdach
+                  i ważnych komunikatach.
                 </p>
 
                 <button
@@ -6566,146 +7632,273 @@ function ParentApp({
               </div>
             )}
 
-            <h2 style={{ marginTop: 5 }}>
-              Wyjazdy i reprezentacje
-            </h2>
+            <h3>Najbliższe wydarzenia</h3>
 
-            {trips.length === 0 ? (
-              <div
-                style={{
-                  ...cardStyle,
-                  color: "#68736d",
-                }}
-              >
+            {childEvents.slice(0, 4).length === 0 ? (
+              <div style={{ ...cardStyle, color: "#68736d" }}>
+                Brak nadchodzących wydarzeń.
+              </div>
+            ) : (
+              <div style={{ display: "grid", gap: 10 }}>
+                {childEvents.slice(0, 4).map((event) => (
+                  <div
+                    key={`parent-event-${event.id}`}
+                    style={{
+                      ...cardStyle,
+                      borderLeft: "5px solid #607b54",
+                    }}
+                  >
+                    <div style={eyebrowStyle}>
+                      {event.whole_troop
+                        ? "CAŁA DRUŻYNA"
+                        : childPatrol?.name || "WYDARZENIE"}
+                    </div>
+
+                    <h3 style={{ margin: "6px 0" }}>
+                      {event.title}
+                    </h3>
+
+                    <div style={{ color: "#59675f", lineHeight: 1.65 }}>
+                      📅 {formatDate(event.event_date)}
+                      <br />
+                      🕐 {normalizeTime(event.start_time)}
+                      {event.end_time
+                        ? `–${normalizeTime(event.end_time)}`
+                        : ""}
+                      <br />
+                      📍 {event.location}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <h3 style={{ marginTop: 20 }}>Wyjazdy</h3>
+
+            {childTrips.length === 0 ? (
+              <div style={{ ...cardStyle, color: "#68736d" }}>
                 Brak nadchodzących wyjazdów.
               </div>
             ) : (
-              <div style={{ display: "grid", gap: 12 }}>
-                {trips.map((event) => {
-                  const roster = parentRoster(event.id);
-                  const staffOnly =
-                    roster.length > 0 &&
-                    roster.every(
-                      (item) =>
-                        item.assignment_type === "staff"
-                    );
-                  const representation = roster.some(
-                    (item) =>
-                      item.assignment_type === "representation"
-                  );
+              <div style={{ display: "grid", gap: 10 }}>
+                {childTrips.map((event) => (
+                  <div
+                    key={`parent-trip-${event.id}`}
+                    style={{
+                      ...cardStyle,
+                      borderLeft: childIsAssigned(event.id)
+                        ? "5px solid #315d3e"
+                        : "5px solid #d1d6d2",
+                    }}
+                  >
+                    <div style={eyebrowStyle}>
+                      {childIsAssigned(event.id)
+                        ? "✓ TWOJE DZIECKO JEDZIE"
+                        : "WYJAZD DRUŻYNY / ZASTĘPU"}
+                    </div>
 
-                  return (
-                    <div
-                      key={event.id}
-                      style={{
-                        ...cardStyle,
-                        borderLeft: staffOnly
-                          ? "5px solid #173b2b"
-                          : representation
-                          ? "5px solid #8b2635"
-                          : "5px solid #607b54",
-                      }}
-                    >
-                      <div style={eyebrowStyle}>
-                        {staffOnly
-                          ? "WYJAZD KADROWY"
-                          : representation
-                          ? "REPREZENTACJA"
-                          : eventTypeLabel(
-                              event.event_type
-                            ).toUpperCase()}
-                      </div>
+                    <h3 style={{ margin: "6px 0" }}>
+                      {event.title}
+                    </h3>
 
-                      <h3>{event.title}</h3>
+                    <div style={{ color: "#59675f", lineHeight: 1.65 }}>
+                      📅 {formatDate(event.event_date)}
+                      <br />
+                      🕐 {normalizeTime(event.start_time)}
+                      {event.end_time
+                        ? `–${normalizeTime(event.end_time)}`
+                        : ""}
+                      <br />
+                      📍 {event.location}
 
-                      <div style={{ lineHeight: 1.7 }}>
-                        📅 {formatDate(event.event_date)}
-                        <br />
-                        🕐 {normalizeTime(event.start_time)}
-                        {event.end_time
-                          ? `–${normalizeTime(
-                              event.end_time
-                            )}`
-                          : ""}
-                        <br />
-                        📍 {event.location}
+                      {event.cost && (
+                        <>
+                          <br />
+                          💰 {event.cost}
+                          {event.payment_deadline
+                            ? ` • do ${formatDate(event.payment_deadline)}`
+                            : ""}
+                        </>
+                      )}
 
-                        {event.cost && (
-                          <>
-                            <br />
-                            💰 {event.cost}
-                          </>
-                        )}
-                      </div>
-
-                      {roster.length > 0 && (
-                        <div
-                          style={{
-                            marginTop: 13,
-                            paddingTop: 12,
-                            borderTop: "1px solid #e3e6e3",
-                          }}
-                        >
-                          <strong>Kto jedzie?</strong>
-
-                          <div
-                            style={{
-                              display: "grid",
-                              gap: 6,
-                              marginTop: 8,
-                            }}
-                          >
-                            {roster.map((item) => (
-                              <div
-                                key={item.id}
-                                style={{
-                                  display: "flex",
-                                  justifyContent:
-                                    "space-between",
-                                  gap: 10,
-                                  fontSize: 13,
-                                }}
-                              >
-                                <span>{item.personName}</span>
-                                <strong
-                                  style={{
-                                    color: "#66726b",
-                                  }}
-                                >
-                                  {assignmentTypeLabel(
-                                    item.assignment_type
-                                  )}
-                                </strong>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
+                      {event.what_to_bring && (
+                        <>
+                          <br />
+                          🎒 {event.what_to_bring}
+                        </>
                       )}
                     </div>
-                  );
-                })}
+                  </div>
+                ))}
               </div>
+            )}
+
+            {childAnnouncements.length > 0 && (
+              <>
+                <h3 style={{ marginTop: 20 }}>Ogłoszenia</h3>
+                <div style={{ display: "grid", gap: 10 }}>
+                  {childAnnouncements.slice(0, 5).map((item) => (
+                    <div
+                      key={`parent-ann-${item.id}`}
+                      style={{
+                        ...cardStyle,
+                        borderLeft: item.important
+                          ? "5px solid #8b2635"
+                          : "5px solid #b98a2f",
+                      }}
+                    >
+                      <strong>{item.title}</strong>
+                      <p
+                        style={{
+                          marginBottom: 0,
+                          color: "#5d6962",
+                          lineHeight: 1.55,
+                        }}
+                      >
+                        {item.body}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </>
             )}
           </>
         )}
 
         {tab === "Kalendarz" && (
-          <SimplePage
-            title="Kalendarz"
-            text="Tu będą wydarzenia i terminy ważne dla dziecka."
-          />
+          <>
+            <div style={eyebrowStyle}>Terminy dziecka</div>
+            <h2 style={{ marginTop: 5 }}>Kalendarz</h2>
+
+            {childEvents.length === 0 ? (
+              <div style={{ ...cardStyle, color: "#68736d" }}>
+                Brak nadchodzących terminów.
+              </div>
+            ) : (
+              <div style={{ display: "grid", gap: 9 }}>
+                {childEvents.map((event) => (
+                  <div
+                    key={`calendar-${event.id}`}
+                    style={cardStyle}
+                  >
+                    <strong>{event.title}</strong>
+                    <div
+                      style={{
+                        marginTop: 5,
+                        color: "#627068",
+                        lineHeight: 1.55,
+                      }}
+                    >
+                      {formatDate(event.event_date)} •{" "}
+                      {normalizeTime(event.start_time)} •{" "}
+                      {event.location}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {tab === "Składki" && (
+          <>
+            <div style={eyebrowStyle}>Składka członkowska</div>
+            <h2 style={{ marginTop: 5 }}>
+              Rok {new Date().getFullYear()}
+            </h2>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 9,
+              }}
+            >
+              {[1, 2, 3, 4].map((quarter) => {
+                const due = childDue(
+                  new Date().getFullYear(),
+                  quarter
+                );
+
+                return (
+                  <div
+                    key={`parent-due-${quarter}`}
+                    style={{
+                      ...cardStyle,
+                      boxShadow: "none",
+                      background: due?.paid
+                        ? "#f1f7f2"
+                        : "#fff8f8",
+                      border: due?.paid
+                        ? "1px solid #a9bbaa"
+                        : "1px solid #e1d0d2",
+                    }}
+                  >
+                    <strong>{quarterLabel(quarter)}</strong>
+                    <div
+                      style={{
+                        marginTop: 6,
+                        fontSize: 12,
+                        fontWeight: 900,
+                        color: due?.paid
+                          ? "#315d3e"
+                          : "#8b2635",
+                      }}
+                    >
+                      {due?.paid ? "OPŁACONA" : "NIEOPŁACONA"}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
         )}
 
         {tab === "Dokumenty" && (
-          <SimplePage
-            title="Dokumenty"
-            text="Tutaj będą zgody, regulaminy i informacje organizacyjne."
-          />
+          <>
+            <div style={eyebrowStyle}>Pliki dla rodziców</div>
+            <h2 style={{ marginTop: 5 }}>Dokumenty</h2>
+
+            {documents.length === 0 ? (
+              <div style={{ ...cardStyle, color: "#68736d" }}>
+                Brak dokumentów.
+              </div>
+            ) : (
+              <div style={{ display: "grid", gap: 10 }}>
+                {documents.map((item) => (
+                  <div
+                    key={`parent-doc-${item.id}`}
+                    style={cardStyle}
+                  >
+                    <strong>{item.title}</strong>
+
+                    {item.description && (
+                      <p
+                        style={{
+                          color: "#5d6962",
+                          lineHeight: 1.55,
+                        }}
+                      >
+                        {item.description}
+                      </p>
+                    )}
+
+                    <button
+                      style={primaryStyle}
+                      onClick={() => openDocument(item)}
+                    >
+                      Otwórz dokument
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
         )}
       </section>
 
       <BottomNav
-        tabs={["Moje", "Kalendarz", "Dokumenty"]}
+        tabs={["Moje", "Kalendarz", "Składki", "Dokumenty"]}
         activeTab={tab}
         setActiveTab={setTab}
       />
