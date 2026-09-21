@@ -15,6 +15,21 @@ const supabase = createClient(
   }
 );
 
+const VAPID_PUBLIC_KEY = "BFgs3cj7ghz3zLXNiy8bt6I2GOA3MPuZ6N0fByYAV8eSCc34hE8h00duN1hQL-Ii0IHUHAS980TZqFwa9hCn_UU";
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding)
+    .replace(/-/g, "+")
+    .replace(/_/g, "/");
+
+  const rawData = window.atob(base64);
+
+  return Uint8Array.from(
+    [...rawData].map((character) => character.charCodeAt(0))
+  );
+}
+
 const FALLBACK_PATROLS = [
   { name: "H Falco", leader_name: "Filip" },
   { name: "H Świetliki", leader_name: "Lilianna" },
@@ -302,6 +317,9 @@ export default function Home() {
   const [people, setPeople] = useState([]);
   const [memberships, setMemberships] = useState([]);
   const [announcements, setAnnouncements] = useState([]);
+  const [notifications, setNotifications] = useState([]);
+  const [pushStatus, setPushStatus] = useState("unknown");
+  const [pushBusy, setPushBusy] = useState(false);
   const [moreSection, setMoreSection] = useState("menu");
 
   const [announcementModalOpen, setAnnouncementModalOpen] = useState(false);
@@ -391,6 +409,8 @@ export default function Home() {
       loadEvents();
       loadPeople();
       loadAnnouncements();
+      loadNotifications();
+      checkPushStatus();
 
       if (role !== "parent") {
         loadSchedule();
@@ -826,9 +846,26 @@ export default function Home() {
         if (slotError) throw slotError;
       }
 
+      await sendPush({
+        kind: "event_update",
+        title: `Nowe wydarzenie: ${eventForm.title.trim()}`,
+        body: `${formatDate(eventForm.date)}, ${eventForm.startTime}${
+          eventForm.endTime ? `–${eventForm.endTime}` : ""
+        }, ${finalLocation}`,
+        target_user_ids: targetUsersForAudience(
+          eventForm.audience,
+          eventForm.patrolId
+        ),
+        link: "/",
+      });
+
       setEventModalOpen(false);
 
-      await Promise.all([loadEvents(), loadSchedule()]);
+      await Promise.all([
+        loadEvents(),
+        loadSchedule(),
+        loadNotifications(),
+      ]);
     } catch (error) {
       console.error("Błąd zapisu wydarzenia:", error);
 
@@ -962,6 +999,219 @@ export default function Home() {
     await Promise.all([loadEvents(), loadSchedule()]);
   }
 
+  async function loadNotifications() {
+    if (!session?.user) return;
+
+    const { data, error } = await supabase
+      .from("notifications")
+      .select("id,title,body,link,read_at,created_at")
+      .eq("user_id", session.user.id)
+      .order("created_at", { ascending: false })
+      .limit(40);
+
+    if (error) {
+      console.error("Błąd pobierania powiadomień:", error);
+      return;
+    }
+
+    setNotifications(data || []);
+  }
+
+  async function checkPushStatus() {
+    if (
+      typeof window === "undefined" ||
+      !("serviceWorker" in navigator) ||
+      !("PushManager" in window) ||
+      !("Notification" in window)
+    ) {
+      setPushStatus("unsupported");
+      return;
+    }
+
+    try {
+      const registration = await navigator.serviceWorker.ready;
+      const subscription =
+        await registration.pushManager.getSubscription();
+
+      if (subscription && Notification.permission === "granted") {
+        setPushStatus("enabled");
+      } else if (Notification.permission === "denied") {
+        setPushStatus("blocked");
+      } else {
+        setPushStatus("disabled");
+      }
+    } catch (error) {
+      console.error("Błąd sprawdzania push:", error);
+      setPushStatus("disabled");
+    }
+  }
+
+  async function enablePushNotifications() {
+    if (!session?.user) return;
+
+    if (
+      !("serviceWorker" in navigator) ||
+      !("PushManager" in window) ||
+      !("Notification" in window)
+    ) {
+      alert("Ta przeglądarka nie obsługuje powiadomień push.");
+      setPushStatus("unsupported");
+      return;
+    }
+
+    setPushBusy(true);
+
+    try {
+      const permission = await Notification.requestPermission();
+
+      if (permission !== "granted") {
+        setPushStatus(
+          permission === "denied" ? "blocked" : "disabled"
+        );
+        alert("Nie udzielono zgody na powiadomienia.");
+        return;
+      }
+
+      const registration = await navigator.serviceWorker.ready;
+
+      let subscription =
+        await registration.pushManager.getSubscription();
+
+      if (!subscription) {
+        subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey:
+            urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+        });
+      }
+
+      const json = subscription.toJSON();
+
+      if (!json.endpoint || !json.keys?.p256dh || !json.keys?.auth) {
+        throw new Error("Nie udało się odczytać danych subskrypcji.");
+      }
+
+      const { data: existingRows, error: findError } = await supabase
+        .from("push_subscriptions")
+        .select("id,endpoint")
+        .eq("user_id", session.user.id)
+        .eq("endpoint", json.endpoint)
+        .limit(1);
+
+      if (findError) throw findError;
+
+      if (!existingRows?.length) {
+        const { error: insertError } = await supabase
+          .from("push_subscriptions")
+          .insert({
+            user_id: session.user.id,
+            endpoint: json.endpoint,
+            p256dh: json.keys.p256dh,
+            auth: json.keys.auth,
+          });
+
+        if (insertError) throw insertError;
+      }
+
+      setPushStatus("enabled");
+      alert("Powiadomienia są włączone na tym urządzeniu.");
+    } catch (error) {
+      console.error("Błąd włączania powiadomień:", error);
+      alert(
+        `Nie udało się włączyć powiadomień.\n\n${
+          error?.message || ""
+        }`
+      );
+    } finally {
+      setPushBusy(false);
+    }
+  }
+
+  async function disablePushNotifications() {
+    if (!session?.user) return;
+
+    setPushBusy(true);
+
+    try {
+      const registration = await navigator.serviceWorker.ready;
+      const subscription =
+        await registration.pushManager.getSubscription();
+
+      if (subscription) {
+        const endpoint = subscription.endpoint;
+
+        await supabase
+          .from("push_subscriptions")
+          .delete()
+          .eq("user_id", session.user.id)
+          .eq("endpoint", endpoint);
+
+        await subscription.unsubscribe();
+      }
+
+      setPushStatus("disabled");
+    } catch (error) {
+      console.error("Błąd wyłączania powiadomień:", error);
+      alert("Nie udało się wyłączyć powiadomień.");
+    } finally {
+      setPushBusy(false);
+    }
+  }
+
+  async function sendPush(body) {
+    try {
+      const { error } = await supabase.functions.invoke("send-push", {
+        body,
+      });
+
+      if (error) {
+        console.error("Błąd funkcji send-push:", error);
+      }
+    } catch (error) {
+      console.error("Nie udało się wysłać push:", error);
+    }
+  }
+
+  function targetUsersForAudience(audience, patrolId) {
+    if (audience === "whole") {
+      return people.map((person) => person.id);
+    }
+
+    const memberIds = memberships
+      .filter(
+        (membership) =>
+          Number(membership.patrol_id) === Number(patrolId)
+      )
+      .map((membership) => membership.user_id);
+
+    const patrol = patrols.find(
+      (item) => Number(item.id) === Number(patrolId)
+    );
+
+    if (patrol?.leader_id) memberIds.push(patrol.leader_id);
+
+    return [...new Set(memberIds)];
+  }
+
+  async function markNotificationRead(notification) {
+    if (!notification?.id || notification.read_at) return;
+
+    const { error } = await supabase
+      .from("notifications")
+      .update({ read_at: new Date().toISOString() })
+      .eq("id", notification.id);
+
+    if (!error) {
+      setNotifications((old) =>
+        old.map((item) =>
+          item.id === notification.id
+            ? { ...item, read_at: new Date().toISOString() }
+            : item
+        )
+      );
+    }
+  }
+
   async function loadPeople() {
     if (!session?.user) return;
 
@@ -1065,8 +1315,21 @@ export default function Home() {
 
       if (error) throw error;
 
+      await sendPush({
+        kind: "announcement",
+        title: announcementForm.important
+          ? `WAŻNE: ${announcementForm.title.trim()}`
+          : announcementForm.title.trim(),
+        body: announcementForm.body.trim(),
+        target_user_ids: targetUsersForAudience(
+          announcementForm.audience,
+          announcementForm.patrolId
+        ),
+        link: "/",
+      });
+
       setAnnouncementModalOpen(false);
-      await loadAnnouncements();
+      await Promise.all([loadAnnouncements(), loadNotifications()]);
     } catch (error) {
       console.error("Błąd zapisu ogłoszenia:", error);
       alert(`Nie udało się zapisać ogłoszenia.\n\n${error?.message || ""}`);
@@ -1257,8 +1520,21 @@ export default function Home() {
 
       if (error) throw error;
 
+      await sendPush({
+        kind: "task",
+        title: `Nowe zadanie: ${taskForm.title.trim()}`,
+        body: taskForm.dueDate
+          ? `Termin: ${formatDate(taskForm.dueDate)}`
+          : taskForm.description.trim() || "Nowe zadanie drużyny.",
+        target_user_ids: targetUsersForAudience(
+          taskForm.audience,
+          taskForm.patrolId
+        ),
+        link: "/",
+      });
+
       setTaskModalOpen(false);
-      await loadTasks();
+      await Promise.all([loadTasks(), loadNotifications()]);
     } catch (error) {
       console.error("Błąd zapisu zadania:", error);
       alert(`Nie udało się dodać zadania.\n\n${error?.message || ""}`);
@@ -1385,6 +1661,8 @@ export default function Home() {
     setPeople([]);
     setMemberships([]);
     setAnnouncements([]);
+    setNotifications([]);
+    setPushStatus("unknown");
     setMyPatrolIds([]);
     setActiveTab("Grafik");
   }
@@ -1607,6 +1885,15 @@ export default function Home() {
 
       if (approvalStatus === "pending") {
         alert("Rezerwacja została wysłana do zatwierdzenia przez administratora.");
+
+        await sendPush({
+          kind: "reservation_pending",
+          title: "Nowa rezerwacja do akceptacji",
+          body: `${requesterName} rezerwuje ${reservationName}: ${formatDate(
+            selectedDate
+          )}, ${form.startTime}–${form.endTime}, ${finalLocation}.`,
+          link: "/",
+        });
       }
 
       await loadSchedule();
@@ -1649,6 +1936,18 @@ export default function Home() {
       return;
     }
 
+    await sendPush({
+      kind: "reservation_approved",
+      target_user_id: reservation.reservedBy,
+      title: "Rezerwacja zatwierdzona",
+      body: `${reservation.patrol}: ${formatDate(
+        reservation.date
+      )}, ${reservation.time}–${reservation.endTime}, ${
+        reservation.location
+      }.`,
+      link: "/",
+    });
+
     await loadSchedule();
   }
 
@@ -1684,6 +1983,19 @@ export default function Home() {
       alert(`Nie udało się odrzucić rezerwacji.\n\n${statusError.message}`);
       return;
     }
+
+    await sendPush({
+      kind: "reservation_rejected",
+      target_user_id: reservation.reservedBy,
+      title: "Rezerwacja odrzucona",
+      body: `${reservation.patrol}: ${formatDate(
+        reservation.date
+      )}, ${reservation.time}–${reservation.endTime}. Powód: ${
+        reason.trim() ||
+        "Rezerwacja odrzucona przez administratora."
+      }`,
+      link: "/",
+    });
 
     // Audit zapisuje status "rejected", a następnie zwalniamy termin.
     const { error: deleteError } = await supabase
@@ -1782,6 +2094,10 @@ export default function Home() {
         events={events}
         eventAssignments={eventAssignments}
         people={people}
+        pushStatus={pushStatus}
+        pushBusy={pushBusy}
+        enablePushNotifications={enablePushNotifications}
+        disablePushNotifications={disablePushNotifications}
       />
     );
   }
@@ -3194,6 +3510,17 @@ export default function Home() {
                   />
 
                   <MoreMenuButton
+                    icon="🔔"
+                    title="Powiadomienia"
+                    subtitle={
+                      pushStatus === "enabled"
+                        ? `${notifications.filter((item) => !item.read_at).length} nieprzeczytanych • push włączony`
+                        : `${notifications.filter((item) => !item.read_at).length} nieprzeczytanych • włącz push`
+                    }
+                    onClick={() => setMoreSection("notifications")}
+                  />
+
+                  <MoreMenuButton
                     icon="⚜️"
                     title="Kadra"
                     subtitle={`${staffPeople.length} osób`}
@@ -3218,6 +3545,149 @@ export default function Home() {
                     }
                   />
                 </div>
+              </>
+            )}
+
+            {moreSection === "notifications" && (
+              <>
+                <div style={eyebrowStyle}>Telefon i aplikacja</div>
+                <h2 style={{ marginTop: 5 }}>Powiadomienia</h2>
+
+                <div
+                  style={{
+                    ...cardStyle,
+                    marginBottom: 14,
+                    border:
+                      pushStatus === "enabled"
+                        ? "1px solid #a9bbaa"
+                        : "1px solid #ead8a7",
+                    background:
+                      pushStatus === "enabled"
+                        ? "#f1f7f2"
+                        : "#fffaf0",
+                  }}
+                >
+                  <strong>
+                    {pushStatus === "enabled"
+                      ? "🔔 Powiadomienia push są włączone"
+                      : pushStatus === "blocked"
+                      ? "🔕 Powiadomienia są zablokowane w przeglądarce"
+                      : pushStatus === "unsupported"
+                      ? "Ta przeglądarka nie obsługuje push"
+                      : "🔔 Włącz powiadomienia na tym urządzeniu"}
+                  </strong>
+
+                  <p
+                    style={{
+                      color: "#5f6c64",
+                      lineHeight: 1.55,
+                    }}
+                  >
+                    Dostaniesz informacje o akceptacji rezerwacji,
+                    ważnych ogłoszeniach, nowych wydarzeniach i zadaniach.
+                  </p>
+
+                  {pushStatus === "enabled" ? (
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: 8,
+                        flexWrap: "wrap",
+                      }}
+                    >
+                      <button
+                        style={secondaryStyle}
+                        disabled={pushBusy}
+                        onClick={disablePushNotifications}
+                      >
+                        Wyłącz na tym urządzeniu
+                      </button>
+
+                      <button
+                        style={primaryStyle}
+                        disabled={pushBusy}
+                        onClick={() =>
+                          sendPush({
+                            kind: "test",
+                            title: "Test 5 WDH",
+                            body: "Powiadomienia działają 🎉",
+                            link: "/",
+                          })
+                        }
+                      >
+                        Wyślij test
+                      </button>
+                    </div>
+                  ) : pushStatus !== "blocked" &&
+                    pushStatus !== "unsupported" ? (
+                    <button
+                      style={primaryStyle}
+                      disabled={pushBusy}
+                      onClick={enablePushNotifications}
+                    >
+                      {pushBusy
+                        ? "Włączam..."
+                        : "Włącz powiadomienia"}
+                    </button>
+                  ) : null}
+                </div>
+
+                <h3>Ostatnie powiadomienia</h3>
+
+                {notifications.length === 0 ? (
+                  <div
+                    style={{
+                      ...cardStyle,
+                      color: "#68736d",
+                    }}
+                  >
+                    Nie masz jeszcze żadnych powiadomień.
+                  </div>
+                ) : (
+                  <div style={{ display: "grid", gap: 9 }}>
+                    {notifications.map((item) => (
+                      <button
+                        key={`notification-${item.id}`}
+                        onClick={() => markNotificationRead(item)}
+                        style={{
+                          ...cardStyle,
+                          border: 0,
+                          width: "100%",
+                          cursor: "pointer",
+                          textAlign: "left",
+                          color: "#17231c",
+                          borderLeft: item.read_at
+                            ? "5px solid #d6dbd6"
+                            : "5px solid #8b2635",
+                        }}
+                      >
+                        <strong>{item.title}</strong>
+
+                        <div
+                          style={{
+                            color: "#5f6c64",
+                            marginTop: 5,
+                            lineHeight: 1.5,
+                          }}
+                        >
+                          {item.body}
+                        </div>
+
+                        <div
+                          style={{
+                            marginTop: 7,
+                            fontSize: 11,
+                            color: "#8a918d",
+                          }}
+                        >
+                          {new Date(item.created_at).toLocaleString(
+                            "pl-PL"
+                          )}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </>
             )}
 
@@ -5235,6 +5705,10 @@ function ParentApp({
   events = [],
   eventAssignments = [],
   people = [],
+  pushStatus,
+  pushBusy,
+  enablePushNotifications,
+  disablePushNotifications,
 }) {
   const [tab, setTab] = useState("Moje");
   const today = dateToString(new Date());
@@ -5287,6 +5761,61 @@ function ParentApp({
             <div style={eyebrowStyle}>
               Najważniejsze informacje
             </div>
+
+            {pushStatus !== "enabled" && (
+              <div
+                style={{
+                  ...cardStyle,
+                  background: "#fffaf0",
+                  border: "1px solid #ead8a7",
+                  boxShadow: "none",
+                  marginBottom: 14,
+                }}
+              >
+                <strong>🔔 Włącz powiadomienia</strong>
+                <p
+                  style={{
+                    color: "#68736d",
+                    lineHeight: 1.5,
+                  }}
+                >
+                  Dzięki nim dostaniesz informację o zmianach,
+                  wyjazdach i ważnych komunikatach.
+                </p>
+
+                <button
+                  style={primaryStyle}
+                  disabled={pushBusy}
+                  onClick={enablePushNotifications}
+                >
+                  {pushBusy ? "Włączam..." : "Włącz powiadomienia"}
+                </button>
+              </div>
+            )}
+
+            {pushStatus === "enabled" && (
+              <div
+                style={{
+                  ...cardStyle,
+                  background: "#f1f7f2",
+                  border: "1px solid #a9bbaa",
+                  boxShadow: "none",
+                  marginBottom: 14,
+                }}
+              >
+                <strong>🔔 Powiadomienia włączone</strong>
+                <button
+                  style={{
+                    ...secondaryStyle,
+                    display: "block",
+                    marginTop: 10,
+                  }}
+                  onClick={disablePushNotifications}
+                >
+                  Wyłącz na tym urządzeniu
+                </button>
+              </div>
+            )}
 
             <h2 style={{ marginTop: 5 }}>
               Wyjazdy i reprezentacje
