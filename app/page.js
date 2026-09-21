@@ -1618,7 +1618,9 @@ export default function Home() {
           function_title: userEditor.functionTitle.trim() || null,
           membership_number:
             userEditor.membershipNumber.trim() || null,
-          is_staff: userEditor.isStaff,
+          is_staff:
+            userEditor.isStaff ||
+            Boolean(userEditor.functionTitle.trim()),
         })
         .eq("id", userEditor.id);
 
@@ -2417,7 +2419,10 @@ export default function Home() {
     null;
 
   const staffPeople = people.filter(
-    (person) => person.is_staff || isAdminRole(person.role)
+    (person) =>
+      person.is_staff ||
+      Boolean(person.function_title?.trim()) ||
+      isAdminRole(person.role)
   );
 
   const visibleTasks = tasks
@@ -4537,7 +4542,7 @@ export default function Home() {
                           >
                             {person.function_title ||
                               (leaderPatrol
-                                ? `Zastępowy/a — ${leaderPatrol.name}`
+                                ? `Zastępowy — ${leaderPatrol.name}`
                                 : "Funkcja do uzupełnienia")}
 
                             {patrol && (
@@ -4906,6 +4911,10 @@ export default function Home() {
                       value === "custom"
                         ? ""
                         : value,
+                    isStaff:
+                      value === ""
+                        ? userEditor.isStaff
+                        : true,
                   });
                 }}
                 style={inputStyle}
@@ -4954,6 +4963,14 @@ export default function Home() {
                 }
               />
               <strong>Pokaż w zakładce Kadra</strong>
+              <span
+                style={{
+                  fontSize: 11,
+                  color: "#768079",
+                }}
+              >
+                (przy wybranej funkcji włącza się automatycznie)
+              </span>
             </label>
 
             <label>
