@@ -144,7 +144,15 @@ function normalizeRole(role) {
 }
 
 function isAdminRole(role) {
-  return ["admin", "administrator"].includes(normalizeRole(role));
+  const value = normalizeRole(role);
+
+  return [
+    "admin",
+    "administrator",
+    "administratorka",
+    "drużynowa",
+    "druzynowa",
+  ].includes(value);
 }
 
 function eventTypeLabel(type) {
@@ -244,6 +252,7 @@ export default function Home() {
 
   const [session, setSession] = useState(null);
   const [role, setRole] = useState(null);
+  const [currentProfile, setCurrentProfile] = useState(null);
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -379,15 +388,34 @@ export default function Home() {
   async function loadRole(userId) {
     const { data, error } = await supabase
       .from("profiles")
-      .select("role")
+      .select("id,role,full_name,function_title,is_staff")
       .eq("id", userId)
-      .single();
+      .maybeSingle();
 
     if (error) {
       console.error("Błąd profilu:", error);
+      setCurrentProfile(null);
       setRole("member");
+      setLoading(false);
+      return;
+    }
+
+    if (!data) {
+      console.warn("Brak profilu dla zalogowanego użytkownika.");
+      setCurrentProfile(null);
+      setRole("member");
+      setLoading(false);
+      return;
+    }
+
+    setCurrentProfile(data);
+
+    const normalized = normalizeRole(data.role);
+
+    if (isAdminRole(normalized)) {
+      setRole("admin");
     } else {
-      setRole(normalizeRole(data?.role || "member"));
+      setRole(normalized || "member");
     }
 
     setLoading(false);
@@ -398,379 +426,30 @@ export default function Home() {
 
     const { data, error } = await supabase
       .from("profiles")
-      .select("role")
+      .select("id,role,full_name,function_title,is_staff")
       .eq("id", session.user.id)
       .maybeSingle();
 
     if (error) {
       console.error("Nie udało się potwierdzić roli admina:", error);
-      return normalizeRole(role) === "admin";
+      return isAdminRole(role) || isAdminRole(currentProfile?.role);
     }
 
-    const admin = isAdminRole(data?.role);
+    if (!data) {
+      return false;
+    }
 
-    if (admin && !isAdminRole(role)) {
+    setCurrentProfile(data);
+
+    const admin = isAdminRole(data.role);
+
+    if (admin) {
       setRole("admin");
+    } else {
+      setRole(normalizeRole(data.role) || "member");
     }
 
     return admin;
-  }
-
-  async function loadSchedule() {
-    setScheduleLoading(true);
-
-    try {
-      const [
-        { data: patrolData, error: patrolError },
-        { data: slotData, error: slotError },
-        { data: reservationData, error: reservationError },
-        { data: scheduleEventData, error: scheduleEventError },
-      ] = await Promise.all([
-        supabase.from("patrols").select("id, name, leader_name, leader_id").order("id"),
-        supabase
-          .from("schedule_slots")
-          .select("id, slot_date, start_time, end_time, location, notes, created_by, event_id")
-          .order("slot_date")
-          .order("start_time"),
-        supabase
-          .from("schedule_reservations")
-          .select("id, slot_id, patrol_id, reserved_by, created_at, reservation_name, reservation_group"),
-        supabase
-          .from("events")
-          .select("id,title,event_date,start_time,end_time,location,created_by"),
-      ]);
-
-      if (patrolError) throw patrolError;
-      if (slotError) throw slotError;
-      if (reservationError) throw reservationError;
-      if (scheduleEventError) throw scheduleEventError;
-
-      const loadedPatrols = patrolData?.length > 0 ? patrolData : FALLBACK_PATROLS;
-      setPatrols(loadedPatrols);
-
-      const rawManual = (reservationData || []).map((reservation) => {
-        const slot = (slotData || []).find((item) => Number(item.id) === Number(reservation.slot_id));
-        const patrol = (patrolData || []).find((item) => Number(item.id) === Number(reservation.patrol_id));
-        if (!slot) return null;
-        return {
-          id: reservation.id,
-          slotId: slot.id,
-          patrolId: reservation.patrol_id,
-          reservedBy: reservation.reserved_by,
-          reservationGroup: reservation.reservation_group,
-          date: slot.slot_date,
-          time: normalizeTime(slot.start_time),
-          endTime: normalizeTime(slot.end_time),
-          location: slot.location,
-          notes: slot.notes,
-          patrol: reservation.reservation_name || patrol?.name || "Zastęp",
-          leader: reservation.reservation_name === "Cała drużyna" ? "rezerwacja drużyny" : patrol?.leader_name || "",
-          isEvent: false,
-        };
-      }).filter(Boolean);
-
-      const groupedManual = [];
-      const groups = new Map();
-      for (const item of rawManual) {
-        const key = item.reservationGroup ? `group-${item.reservationGroup}` : `single-${item.id}`;
-        if (!groups.has(key)) groups.set(key, []);
-        groups.get(key).push(item);
-      }
-      for (const items of groups.values()) {
-        items.sort((a, b) => a.time.localeCompare(b.time));
-        const first = items[0];
-        const last = items[items.length - 1];
-        groupedManual.push({
-          ...first,
-          id: first.reservationGroup ? `group-${first.reservationGroup}` : first.id,
-          reservationIds: items.map((x) => x.id),
-          slotIds: items.map((x) => x.slotId),
-          endTime: last.endTime,
-        });
-      }
-
-      const eventGroups = new Map();
-      for (const slot of (slotData || []).filter((item) => item.event_id)) {
-        const key = String(slot.event_id);
-        if (!eventGroups.has(key)) eventGroups.set(key, []);
-        eventGroups.get(key).push(slot);
-      }
-      const eventBlocks = [];
-      for (const [eventId, slots] of eventGroups.entries()) {
-        slots.sort((a, b) => normalizeTime(a.start_time).localeCompare(normalizeTime(b.start_time)));
-        const first = slots[0];
-        const last = slots[slots.length - 1];
-        eventBlocks.push({
-          id: `event-${eventId}`,
-          eventId: Number(eventId),
-          reservedBy: first.created_by,
-          date: first.slot_date,
-          time: normalizeTime(first.start_time),
-          endTime: normalizeTime(last.end_time),
-          location: first.location,
-          notes: first.notes,
-          patrol: first.notes || "Wydarzenie",
-          leader: "wydarzenie drużyny",
-          isEvent: true,
-        });
-      }
-
-      const linkedEventIds = new Set(eventBlocks.map((item) => Number(item.eventId)));
-      const legacyEventBlocks = (scheduleEventData || [])
-        .filter((eventItem) => MAIN_LOCATIONS.includes(eventItem.location))
-        .filter((eventItem) => !linkedEventIds.has(Number(eventItem.id)))
-        .map((eventItem) => ({
-          id: `event-${eventItem.id}`,
-          eventId: Number(eventItem.id),
-          reservedBy: eventItem.created_by,
-          date: eventItem.event_date,
-          time: normalizeTime(eventItem.start_time),
-          endTime: normalizeTime(eventItem.end_time) || addMinutes(normalizeTime(eventItem.start_time), 30),
-          location: eventItem.location,
-          notes: eventItem.title,
-          patrol: eventItem.title || "Wydarzenie",
-          leader: "wydarzenie drużyny",
-          isEvent: true,
-        }));
-
-      setReservations([...groupedManual, ...eventBlocks, ...legacyEventBlocks]);
-    } catch (error) {
-      console.error("Błąd pobierania grafiku:", error);
-      alert("Nie udało się pobrać Grafiku z bazy. Jeśli błąd się powtórzy, podeślij mi ekran.");
-    } finally {
-      setScheduleLoading(false);
-    }
-  }
-
-  async function loadEvents() {
-    if (!session?.user) return;
-
-    try {
-      const [
-        { data: eventData, error: eventError },
-        { data: membershipData },
-      ] = await Promise.all([
-        supabase
-          .from("events")
-          .select(
-            "id,title,event_type,event_date,start_time,end_time,location,description,created_by,whole_troop,patrol_id,what_to_bring,cost,payment_deadline"
-          )
-          .order("event_date")
-          .order("start_time"),
-
-        supabase
-          .from("patrol_members")
-          .select("patrol_id")
-          .eq("user_id", session.user.id),
-      ]);
-
-      if (eventError) throw eventError;
-
-      setEvents(eventData || []);
-      setMyPatrolIds(
-        (membershipData || []).map((item) => Number(item.patrol_id))
-      );
-    } catch (error) {
-      console.error("Błąd pobierania wydarzeń:", error);
-      alert("Nie udało się pobrać wydarzeń.");
-    }
-  }
-
-  function openEventForm(presetType = "zbiórka") {
-    const tripPreset = isTripType(presetType);
-
-    setEventForm({
-      title: "",
-      eventType: presetType,
-      audience: "whole",
-      patrolId: patrols[0]?.id ? String(patrols[0].id) : "",
-      date: selectedDate,
-      startTime: tripPreset ? "08:00" : "17:30",
-      endTime: tripPreset ? "18:00" : "19:30",
-      location: tripPreset ? "Inne" : "Basecamp",
-      customLocation: "",
-      description: "",
-      bring: "",
-      hasPayment: false,
-      cost: "",
-      paymentDeadline: "",
-    });
-
-    setEventModalOpen(true);
-  }
-
-  async function saveEvent() {
-    if (!session?.user || !isAdmin) {
-      alert("Tylko administrator może dodawać wydarzenia.");
-      return;
-    }
-
-    const finalLocation =
-      eventForm.location === "Inne"
-        ? eventForm.customLocation.trim()
-        : eventForm.location;
-
-    if (!eventForm.title.trim()) {
-      alert("Wpisz nazwę wydarzenia.");
-      return;
-    }
-
-    if (!eventForm.date || !eventForm.startTime) {
-      alert("Uzupełnij datę i godzinę.");
-      return;
-    }
-
-    if (eventForm.endTime && eventForm.endTime <= eventForm.startTime) {
-      alert("Godzina zakończenia musi być późniejsza niż rozpoczęcia.");
-      return;
-    }
-
-    if (!finalLocation) {
-      alert("Wpisz miejsce wydarzenia.");
-      return;
-    }
-
-    if (eventForm.audience === "patrol" && !eventForm.patrolId) {
-      alert("Wybierz zastęp.");
-      return;
-    }
-
-    if (eventForm.hasPayment && !eventForm.cost.trim()) {
-      alert("Wpisz kwotę płatności.");
-      return;
-    }
-
-    setEventSaving(true);
-    let createdEventId = null;
-
-    try {
-      const reservesRoom = MAIN_LOCATIONS.includes(finalLocation);
-
-      const starts = reservesRoom
-        ? halfHourStarts(
-            eventForm.startTime,
-            eventForm.endTime || addMinutes(eventForm.startTime, 30)
-          )
-        : [];
-
-      if (reservesRoom) {
-        const { data: existingSlots, error: existingError } = await supabase
-          .from("schedule_slots")
-          .select("id,start_time,location")
-          .eq("slot_date", eventForm.date)
-          .eq("location", finalLocation);
-
-        if (existingError) throw existingError;
-
-        const occupiedTimes = new Set(
-          (existingSlots || []).map((slot) => normalizeTime(slot.start_time))
-        );
-
-        const conflict = starts.find((time) => occupiedTimes.has(time));
-
-        if (conflict) {
-          alert(
-            `${finalLocation} jest już zajęty ${eventForm.date} o ${conflict}. Wydarzenie nie zostało zapisane.`
-          );
-          return;
-        }
-      }
-
-      const { data: created, error: eventError } = await supabase
-        .from("events")
-        .insert({
-          title: eventForm.title.trim(),
-          event_type: eventForm.eventType,
-          event_date: eventForm.date,
-          start_time: `${eventForm.startTime}:00`,
-          end_time: eventForm.endTime
-            ? `${eventForm.endTime}:00`
-            : null,
-          location: finalLocation,
-          description: eventForm.description.trim() || null,
-          created_by: session.user.id,
-          whole_troop: eventForm.audience === "whole",
-          patrol_id:
-            eventForm.audience === "patrol"
-              ? Number(eventForm.patrolId)
-              : null,
-          what_to_bring: eventForm.bring.trim() || null,
-          cost: eventForm.hasPayment
-            ? eventForm.cost.trim()
-            : null,
-          payment_deadline:
-            eventForm.hasPayment && eventForm.paymentDeadline
-              ? eventForm.paymentDeadline
-              : null,
-        })
-        .select("id")
-        .single();
-
-      if (eventError) throw eventError;
-
-      createdEventId = created.id;
-
-      if (reservesRoom && starts.length > 0) {
-        const slotsToInsert = starts.map((time) => ({
-          slot_date: eventForm.date,
-          start_time: `${time}:00`,
-          end_time: `${addMinutes(time, 30)}:00`,
-          location: finalLocation,
-          notes: eventForm.title.trim(),
-          created_by: session.user.id,
-          event_id: created.id,
-        }));
-
-        const { error: slotError } = await supabase
-          .from("schedule_slots")
-          .insert(slotsToInsert);
-
-        if (slotError) throw slotError;
-      }
-
-      setEventModalOpen(false);
-
-      await Promise.all([loadEvents(), loadSchedule()]);
-    } catch (error) {
-      console.error("Błąd zapisu wydarzenia:", error);
-
-      if (createdEventId) {
-        await supabase
-          .from("events")
-          .delete()
-          .eq("id", createdEventId);
-      }
-
-      alert(
-        `Nie udało się zapisać wydarzenia.\n\n${error?.message || ""}`
-      );
-    } finally {
-      setEventSaving(false);
-    }
-  }
-
-  async function deleteEvent(eventItem) {
-    if (!isAdmin || !eventItem?.id) return;
-
-    const confirmed = window.confirm(
-      `Usunąć wydarzenie „${eventItem.title}”?`
-    );
-
-    if (!confirmed) return;
-
-    const { error } = await supabase
-      .from("events")
-      .delete()
-      .eq("id", eventItem.id);
-
-    if (error) {
-      alert(`Nie udało się usunąć wydarzenia.\n\n${error.message}`);
-      return;
-    }
-
-    setEventDetails(null);
-
-    await Promise.all([loadEvents(), loadSchedule()]);
   }
 
   async function loadPeople() {
@@ -1189,6 +868,7 @@ export default function Home() {
 
     setSession(null);
     setRole(null);
+    setCurrentProfile(null);
     setReservations([]);
     setEvents([]);
     setTasks([]);
@@ -1512,7 +1192,9 @@ export default function Home() {
   const validTimes = availableTimesForDate(selectedDate);
 
   const today = dateToString(new Date());
-  const isAdmin = isAdminRole(role);
+  const isAdmin =
+    isAdminRole(role) ||
+    isAdminRole(currentProfile?.role);
 
   const visibleEvents = events
     .filter((item) => item.event_date >= today)
@@ -1597,7 +1279,7 @@ export default function Home() {
       <AppHeader
         subtitle={
           isAdmin
-            ? "Panel administratora"
+            ? "Panel administratora • ADMIN"
             : "Centrum drużyny"
         }
         logout={logout}
