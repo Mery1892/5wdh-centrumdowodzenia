@@ -143,6 +143,10 @@ function normalizeRole(role) {
   return String(role || "").trim().toLowerCase();
 }
 
+function isAdminRole(role) {
+  return ["admin", "administrator"].includes(normalizeRole(role));
+}
+
 function eventTypeLabel(type) {
   const labels = {
     "zbiórka": "Zbiórka",
@@ -181,6 +185,18 @@ function tripCountdownLabel(dateString) {
   if (days < 7) return `za ${days} dni`;
   if (days < 14) return "za tydzień";
   return `za ${days} dni`;
+}
+
+function taskDeadlineLabel(dateString) {
+  if (!dateString) return "bez terminu";
+
+  const days = daysUntil(dateString);
+
+  if (days < 0) return `${Math.abs(days)} dni po terminie`;
+  if (days === 0) return "termin dzisiaj";
+  if (days === 1) return "termin jutro";
+  if (days <= 7) return `termin za ${days} dni`;
+  return `do ${dateString}`;
 }
 
 const cardStyle = {
@@ -248,6 +264,42 @@ export default function Home() {
   const [events, setEvents] = useState([]);
   const [myPatrolIds, setMyPatrolIds] = useState([]);
 
+  const [tasks, setTasks] = useState([]);
+
+  const [people, setPeople] = useState([]);
+  const [memberships, setMemberships] = useState([]);
+  const [announcements, setAnnouncements] = useState([]);
+  const [moreSection, setMoreSection] = useState("menu");
+
+  const [announcementModalOpen, setAnnouncementModalOpen] = useState(false);
+  const [announcementSaving, setAnnouncementSaving] = useState(false);
+  const [announcementForm, setAnnouncementForm] = useState({
+    title: "",
+    body: "",
+    audience: "whole",
+    patrolId: "",
+    important: false,
+    pinned: false,
+    expiresAt: "",
+  });
+
+  const [userEditor, setUserEditor] = useState(null);
+  const [userSaving, setUserSaving] = useState(false);
+
+  const [signupMode, setSignupMode] = useState(false);
+  const [signupName, setSignupName] = useState("");
+  const [signupMessage, setSignupMessage] = useState("");
+
+  const [taskModalOpen, setTaskModalOpen] = useState(false);
+  const [taskSaving, setTaskSaving] = useState(false);
+  const [taskForm, setTaskForm] = useState({
+    title: "",
+    description: "",
+    dueDate: "",
+    audience: "whole",
+    patrolId: "",
+  });
+
   const [eventModalOpen, setEventModalOpen] = useState(false);
   const [eventSaving, setEventSaving] = useState(false);
   const [eventDetails, setEventDetails] = useState(null);
@@ -304,6 +356,9 @@ export default function Home() {
     if (session && role && role !== "parent") {
       loadSchedule();
       loadEvents();
+      loadTasks();
+      loadPeople();
+      loadAnnouncements();
     }
   }, [session, role]);
 
@@ -338,6 +393,29 @@ export default function Home() {
     setLoading(false);
   }
 
+  async function verifyAdminAccess() {
+    if (!session?.user?.id) return false;
+
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("role")
+      .eq("id", session.user.id)
+      .maybeSingle();
+
+    if (error) {
+      console.error("Nie udało się potwierdzić roli admina:", error);
+      return normalizeRole(role) === "admin";
+    }
+
+    const admin = isAdminRole(data?.role);
+
+    if (admin && !isAdminRole(role)) {
+      setRole("admin");
+    }
+
+    return admin;
+  }
+
   async function loadSchedule() {
     setScheduleLoading(true);
 
@@ -348,7 +426,7 @@ export default function Home() {
         { data: reservationData, error: reservationError },
         { data: scheduleEventData, error: scheduleEventError },
       ] = await Promise.all([
-        supabase.from("patrols").select("id, name, leader_name").order("id"),
+        supabase.from("patrols").select("id, name, leader_name, leader_id").order("id"),
         supabase
           .from("schedule_slots")
           .select("id, slot_date, start_time, end_time, location, notes, created_by, event_id")
@@ -695,6 +773,397 @@ export default function Home() {
     await Promise.all([loadEvents(), loadSchedule()]);
   }
 
+  async function loadPeople() {
+    if (!session?.user) return;
+
+    const [
+      { data: profileData, error: profileError },
+      { data: membershipData, error: membershipError },
+    ] = await Promise.all([
+      supabase
+        .from("profiles")
+        .select("id,role,full_name,function_title,is_staff,created_at")
+        .order("full_name"),
+      supabase
+        .from("patrol_members")
+        .select("user_id,patrol_id"),
+    ]);
+
+    if (profileError) {
+      console.error("Błąd pobierania profili:", profileError);
+      return;
+    }
+
+    if (membershipError) {
+      console.error("Błąd pobierania członkostw:", membershipError);
+    }
+
+    setPeople(profileData || []);
+    setMemberships(membershipData || []);
+  }
+
+  async function loadAnnouncements() {
+    if (!session?.user) return;
+
+    const { data, error } = await supabase
+      .from("announcements")
+      .select(
+        "id,title,body,whole_troop,patrol_id,important,pinned,expires_at,created_by,created_at"
+      )
+      .order("pinned", { ascending: false })
+      .order("important", { ascending: false })
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("Błąd pobierania ogłoszeń:", error);
+      return;
+    }
+
+    setAnnouncements(data || []);
+  }
+
+  function openAnnouncementForm() {
+    setAnnouncementForm({
+      title: "",
+      body: "",
+      audience: "whole",
+      patrolId: patrols[0]?.id ? String(patrols[0].id) : "",
+      important: false,
+      pinned: false,
+      expiresAt: "",
+    });
+
+    setAnnouncementModalOpen(true);
+  }
+
+  async function saveAnnouncement() {
+    const admin = await verifyAdminAccess();
+
+    if (!admin) {
+      alert("Tylko administrator może dodawać ogłoszenia.");
+      return;
+    }
+
+    if (!announcementForm.title.trim() || !announcementForm.body.trim()) {
+      alert("Wpisz tytuł i treść ogłoszenia.");
+      return;
+    }
+
+    if (
+      announcementForm.audience === "patrol" &&
+      !announcementForm.patrolId
+    ) {
+      alert("Wybierz zastęp.");
+      return;
+    }
+
+    setAnnouncementSaving(true);
+
+    try {
+      const { error } = await supabase.from("announcements").insert({
+        title: announcementForm.title.trim(),
+        body: announcementForm.body.trim(),
+        whole_troop: announcementForm.audience === "whole",
+        patrol_id:
+          announcementForm.audience === "patrol"
+            ? Number(announcementForm.patrolId)
+            : null,
+        important: announcementForm.important,
+        pinned: announcementForm.pinned,
+        expires_at: announcementForm.expiresAt || null,
+        created_by: session.user.id,
+      });
+
+      if (error) throw error;
+
+      setAnnouncementModalOpen(false);
+      await loadAnnouncements();
+    } catch (error) {
+      console.error("Błąd zapisu ogłoszenia:", error);
+      alert(`Nie udało się zapisać ogłoszenia.\n\n${error?.message || ""}`);
+    } finally {
+      setAnnouncementSaving(false);
+    }
+  }
+
+  async function deleteAnnouncement(item) {
+    const admin = await verifyAdminAccess();
+    if (!admin) return;
+
+    if (!window.confirm(`Usunąć ogłoszenie „${item.title}”?`)) return;
+
+    const { error } = await supabase
+      .from("announcements")
+      .delete()
+      .eq("id", item.id);
+
+    if (error) {
+      alert(`Nie udało się usunąć ogłoszenia.\n\n${error.message}`);
+      return;
+    }
+
+    await loadAnnouncements();
+  }
+
+  function openUserEditor(profile) {
+    const membership = memberships.find(
+      (item) => item.user_id === profile.id
+    );
+
+    const leaderPatrol = patrols.find(
+      (item) => item.leader_id === profile.id
+    );
+
+    setUserEditor({
+      id: profile.id,
+      fullName: profile.full_name || "",
+      role: normalizeRole(profile.role || "member"),
+      functionTitle: profile.function_title || "",
+      isStaff: Boolean(profile.is_staff),
+      patrolId: membership?.patrol_id ? String(membership.patrol_id) : "",
+      leaderPatrolId: leaderPatrol?.id ? String(leaderPatrol.id) : "",
+    });
+  }
+
+  async function saveUserEditor() {
+    const admin = await verifyAdminAccess();
+    if (!admin || !userEditor) return;
+
+    if (!userEditor.fullName.trim()) {
+      alert("Wpisz imię i nazwisko.");
+      return;
+    }
+
+    setUserSaving(true);
+
+    try {
+      const { error: profileError } = await supabase
+        .from("profiles")
+        .update({
+          full_name: userEditor.fullName.trim(),
+          role: userEditor.role,
+          function_title: userEditor.functionTitle.trim() || null,
+          is_staff: userEditor.isStaff,
+        })
+        .eq("id", userEditor.id);
+
+      if (profileError) throw profileError;
+
+      const { error: deleteMembershipError } = await supabase
+        .from("patrol_members")
+        .delete()
+        .eq("user_id", userEditor.id);
+
+      if (deleteMembershipError) throw deleteMembershipError;
+
+      if (userEditor.patrolId) {
+        const { error: membershipError } = await supabase
+          .from("patrol_members")
+          .insert({
+            user_id: userEditor.id,
+            patrol_id: Number(userEditor.patrolId),
+          });
+
+        if (membershipError) throw membershipError;
+      }
+
+      const { error: clearLeaderError } = await supabase
+        .from("patrols")
+        .update({ leader_id: null })
+        .eq("leader_id", userEditor.id);
+
+      if (clearLeaderError) throw clearLeaderError;
+
+      if (userEditor.leaderPatrolId) {
+        const { error: leaderError } = await supabase
+          .from("patrols")
+          .update({
+            leader_id: userEditor.id,
+            leader_name: userEditor.fullName.trim(),
+          })
+          .eq("id", Number(userEditor.leaderPatrolId));
+
+        if (leaderError) throw leaderError;
+      }
+
+      setUserEditor(null);
+
+      await Promise.all([
+        loadPeople(),
+        loadSchedule(),
+      ]);
+    } catch (error) {
+      console.error("Błąd zapisu użytkownika:", error);
+      alert(`Nie udało się zapisać użytkownika.\n\n${error?.message || ""}`);
+    } finally {
+      setUserSaving(false);
+    }
+  }
+
+  async function loadTasks() {
+    if (!session?.user) return;
+
+    const { data, error } = await supabase
+      .from("tasks")
+      .select(
+        "id,title,description,due_date,status,whole_troop,patrol_id,created_by,created_at"
+      )
+      .order("status")
+      .order("due_date", { ascending: true, nullsFirst: false })
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("Błąd pobierania zadań:", error);
+      return;
+    }
+
+    setTasks(data || []);
+  }
+
+  function openTaskForm() {
+    setTaskForm({
+      title: "",
+      description: "",
+      dueDate: "",
+      audience: "whole",
+      patrolId: patrols[0]?.id ? String(patrols[0].id) : "",
+    });
+
+    setTaskModalOpen(true);
+  }
+
+  async function saveTask() {
+    const admin = await verifyAdminAccess();
+
+    if (!admin) {
+      alert("Tylko administrator może dodawać zadania.");
+      return;
+    }
+
+    if (!taskForm.title.trim()) {
+      alert("Wpisz nazwę zadania.");
+      return;
+    }
+
+    if (taskForm.audience === "patrol" && !taskForm.patrolId) {
+      alert("Wybierz zastęp.");
+      return;
+    }
+
+    setTaskSaving(true);
+
+    try {
+      const { error } = await supabase.from("tasks").insert({
+        title: taskForm.title.trim(),
+        description: taskForm.description.trim() || null,
+        due_date: taskForm.dueDate || null,
+        status: "todo",
+        whole_troop: taskForm.audience === "whole",
+        patrol_id:
+          taskForm.audience === "patrol"
+            ? Number(taskForm.patrolId)
+            : null,
+        created_by: session.user.id,
+      });
+
+      if (error) throw error;
+
+      setTaskModalOpen(false);
+      await loadTasks();
+    } catch (error) {
+      console.error("Błąd zapisu zadania:", error);
+      alert(`Nie udało się dodać zadania.\n\n${error?.message || ""}`);
+    } finally {
+      setTaskSaving(false);
+    }
+  }
+
+  async function changeTaskStatus(task, status) {
+    const admin = await verifyAdminAccess();
+
+    if (!admin) {
+      alert("Na razie status zadań zmienia administrator.");
+      return;
+    }
+
+    const { error } = await supabase
+      .from("tasks")
+      .update({ status })
+      .eq("id", task.id);
+
+    if (error) {
+      alert(`Nie udało się zmienić statusu.\n\n${error.message}`);
+      return;
+    }
+
+    await loadTasks();
+  }
+
+  async function deleteTask(task) {
+    const admin = await verifyAdminAccess();
+
+    if (!admin) return;
+
+    if (!window.confirm(`Usunąć zadanie „${task.title}”?`)) return;
+
+    const { error } = await supabase
+      .from("tasks")
+      .delete()
+      .eq("id", task.id);
+
+    if (error) {
+      alert(`Nie udało się usunąć zadania.\n\n${error.message}`);
+      return;
+    }
+
+    await loadTasks();
+  }
+
+  async function register(event) {
+    event.preventDefault();
+
+    if (!signupName.trim()) {
+      setLoginError("Wpisz imię i nazwisko.");
+      return;
+    }
+
+    if (password.length < 6) {
+      setLoginError("Hasło musi mieć co najmniej 6 znaków.");
+      return;
+    }
+
+    setLoggingIn(true);
+    setLoginError("");
+    setSignupMessage("");
+
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: {
+          full_name: signupName.trim(),
+        },
+      },
+    });
+
+    if (error) {
+      setLoginError(error.message || "Nie udało się utworzyć konta.");
+      setLoggingIn(false);
+      return;
+    }
+
+    if (!data.session) {
+      setSignupMessage(
+        "Konto utworzone. Sprawdź skrzynkę e-mail i potwierdź adres, a potem się zaloguj."
+      );
+      setSignupMode(false);
+    } else {
+      setSignupMessage("Konto utworzone.");
+    }
+
+    setLoggingIn(false);
+  }
+
   async function login(event) {
     event.preventDefault();
 
@@ -722,8 +1191,32 @@ export default function Home() {
     setRole(null);
     setReservations([]);
     setEvents([]);
+    setTasks([]);
+    setPeople([]);
+    setMemberships([]);
+    setAnnouncements([]);
     setMyPatrolIds([]);
     setActiveTab("Grafik");
+  }
+
+  async function handleReservationAudienceChange(value) {
+    if (value !== "whole") {
+      setForm((old) => ({ ...old, reserver: value }));
+      return;
+    }
+
+    const admin = await verifyAdminAccess();
+
+    if (admin) {
+      setForm((old) => ({ ...old, reserver: "whole" }));
+      return;
+    }
+
+    alert("Opcja „Cała drużyna” jest dostępna tylko dla administratora.");
+    setForm((old) => ({
+      ...old,
+      reserver: String(patrols[0]?.id || ""),
+    }));
   }
 
   function openReservation(time = "17:30", location = "Nora") {
@@ -770,9 +1263,13 @@ export default function Home() {
 
     const wholeTroop = form.reserver === "whole";
 
-    if (wholeTroop && !isAdmin) {
-      alert("Tylko administrator może rezerwować dla całej drużyny.");
-      return;
+    if (wholeTroop) {
+      const admin = await verifyAdminAccess();
+
+      if (!admin) {
+        alert("Tylko administrator może rezerwować dla całej drużyny.");
+        return;
+      }
     }
 
     const patrol = wholeTroop
@@ -975,6 +1472,12 @@ export default function Home() {
         login={login}
         error={loginError}
         loggingIn={loggingIn}
+        signupMode={signupMode}
+        setSignupMode={setSignupMode}
+        signupName={signupName}
+        setSignupName={setSignupName}
+        signupMessage={signupMessage}
+        register={register}
       />
     );
   }
@@ -1009,7 +1512,7 @@ export default function Home() {
   const validTimes = availableTimesForDate(selectedDate);
 
   const today = dateToString(new Date());
-  const isAdmin = normalizeRole(role) === "admin";
+  const isAdmin = isAdminRole(role);
 
   const visibleEvents = events
     .filter((item) => item.event_date >= today)
@@ -1026,6 +1529,39 @@ export default function Home() {
       item.reservedBy === session.user.id &&
       item.date >= today
   );
+
+  const visibleAnnouncements = announcements
+    .filter((item) => {
+      if (item.expires_at && item.expires_at < today) return false;
+      if (isAdmin) return true;
+      if (item.whole_troop) return true;
+      return myPatrolIds.includes(Number(item.patrol_id));
+    });
+
+  const importantAnnouncement =
+    visibleAnnouncements.find((item) => item.pinned) ||
+    visibleAnnouncements.find((item) => item.important) ||
+    null;
+
+  const staffPeople = people.filter(
+    (person) => person.is_staff || isAdminRole(person.role)
+  );
+
+  const visibleTasks = tasks
+    .filter((task) => {
+      if (isAdmin) return true;
+      if (task.whole_troop) return true;
+      return myPatrolIds.includes(Number(task.patrol_id));
+    })
+    .sort((a, b) => {
+      if (a.status !== b.status) return a.status === "done" ? 1 : -1;
+
+      const aDate = a.due_date || "9999-12-31";
+      const bDate = b.due_date || "9999-12-31";
+      return aDate.localeCompare(bDate);
+    });
+
+  const openTasks = visibleTasks.filter((task) => task.status !== "done");
 
   const upcomingTrips = visibleEvents
     .filter((item) => isTripType(item.event_type))
@@ -1435,10 +1971,50 @@ export default function Home() {
               )}
             </div>
 
+            {importantAnnouncement && (
+              <button
+                onClick={() => {
+                  setActiveTab("Więcej");
+                  setMoreSection("announcements");
+                }}
+                style={{
+                  ...cardStyle,
+                  width: "100%",
+                  border: 0,
+                  borderLeft: importantAnnouncement.important
+                    ? "5px solid #8b2635"
+                    : "5px solid #b98a2f",
+                  textAlign: "left",
+                  cursor: "pointer",
+                  marginBottom: 14,
+                  color: "#17231c",
+                }}
+              >
+                <div style={eyebrowStyle}>
+                  {importantAnnouncement.pinned
+                    ? "📌 PRZYPIĘTE OGŁOSZENIE"
+                    : "WAŻNE OGŁOSZENIE"}
+                </div>
+
+                <h3 style={{ margin: "7px 0 7px" }}>
+                  {importantAnnouncement.title}
+                </h3>
+
+                <div
+                  style={{
+                    color: "#5c6861",
+                    lineHeight: 1.55,
+                  }}
+                >
+                  {importantAnnouncement.body}
+                </div>
+              </button>
+            )}
+
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+                gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
                 gap: 9,
                 marginBottom: 16,
               }}
@@ -1454,6 +2030,10 @@ export default function Home() {
               <MiniStat
                 value={upcomingTrips.length}
                 label="wyjazdy"
+              />
+              <MiniStat
+                value={openTasks.length}
+                label="zadania"
               />
             </div>
 
@@ -1871,44 +2451,566 @@ export default function Home() {
         )}
 
         {activeTab === "Zadania" && (
-          <SimplePage
-            title="Zadania"
-            text="Zadania drużyny: kto, co i do kiedy."
-          />
+          <>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: 12,
+                marginBottom: 18,
+                flexWrap: "wrap",
+              }}
+            >
+              <div>
+                <div style={eyebrowStyle}>Do zrobienia</div>
+                <h2 style={{ margin: "4px 0 0" }}>Zadania</h2>
+              </div>
+
+              {isAdmin && (
+                <button
+                  style={primaryStyle}
+                  onClick={openTaskForm}
+                >
+                  + Zadanie
+                </button>
+              )}
+            </div>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+                gap: 9,
+                marginBottom: 18,
+              }}
+            >
+              <MiniStat
+                value={openTasks.length}
+                label="do zrobienia"
+              />
+              <MiniStat
+                value={
+                  openTasks.filter(
+                    (task) =>
+                      task.due_date &&
+                      daysUntil(task.due_date) < 0
+                  ).length
+                }
+                label="po terminie"
+              />
+              <MiniStat
+                value={
+                  visibleTasks.filter(
+                    (task) => task.status === "done"
+                  ).length
+                }
+                label="zrobione"
+              />
+            </div>
+
+            {visibleTasks.length === 0 ? (
+              <div
+                style={{
+                  ...cardStyle,
+                  textAlign: "center",
+                  color: "#68736d",
+                }}
+              >
+                Brak zadań.
+                {isAdmin && (
+                  <div style={{ marginTop: 12 }}>
+                    <button
+                      style={primaryStyle}
+                      onClick={openTaskForm}
+                    >
+                      Dodaj pierwsze zadanie
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div style={{ display: "grid", gap: 11 }}>
+                {visibleTasks.map((task) => {
+                  const patrol = patrols.find(
+                    (item) =>
+                      Number(item.id) === Number(task.patrol_id)
+                  );
+
+                  const overdue =
+                    task.due_date &&
+                    task.status !== "done" &&
+                    daysUntil(task.due_date) < 0;
+
+                  return (
+                    <div
+                      key={`task-${task.id}`}
+                      style={{
+                        ...cardStyle,
+                        borderLeft:
+                          task.status === "done"
+                            ? "5px solid #607b54"
+                            : overdue
+                            ? "5px solid #8b2635"
+                            : "5px solid #b98a2f",
+                        opacity:
+                          task.status === "done" ? 0.72 : 1,
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          gap: 10,
+                          alignItems: "flex-start",
+                        }}
+                      >
+                        <div>
+                          <div style={eyebrowStyle}>
+                            {task.whole_troop
+                              ? "CAŁA DRUŻYNA"
+                              : patrol?.name || "ZASTĘP"}
+                          </div>
+
+                          <h3
+                            style={{
+                              margin: "7px 0 7px",
+                              textDecoration:
+                                task.status === "done"
+                                  ? "line-through"
+                                  : "none",
+                            }}
+                          >
+                            {task.title}
+                          </h3>
+                        </div>
+
+                        <span
+                          style={{
+                            background:
+                              task.status === "done"
+                                ? "#edf2ee"
+                                : overdue
+                                ? "#fff0f1"
+                                : "#fff8e8",
+                            color:
+                              task.status === "done"
+                                ? "#42604f"
+                                : overdue
+                                ? "#8b2635"
+                                : "#74591e",
+                            borderRadius: 20,
+                            padding: "7px 9px",
+                            fontSize: 10,
+                            fontWeight: 900,
+                            textAlign: "center",
+                          }}
+                        >
+                          {task.status === "done"
+                            ? "ZROBIONE"
+                            : taskDeadlineLabel(task.due_date)}
+                        </span>
+                      </div>
+
+                      {task.description && (
+                        <p
+                          style={{
+                            color: "#56635c",
+                            lineHeight: 1.6,
+                            marginBottom: 10,
+                          }}
+                        >
+                          {task.description}
+                        </p>
+                      )}
+
+                      {task.due_date && (
+                        <div
+                          style={{
+                            color: "#6a746e",
+                            fontSize: 13,
+                          }}
+                        >
+                          📅 {formatDate(task.due_date)}
+                        </div>
+                      )}
+
+                      {isAdmin && (
+                        <div
+                          style={{
+                            display: "flex",
+                            gap: 8,
+                            marginTop: 13,
+                            flexWrap: "wrap",
+                          }}
+                        >
+                          {task.status !== "done" ? (
+                            <button
+                              style={secondaryStyle}
+                              onClick={() =>
+                                changeTaskStatus(task, "done")
+                              }
+                            >
+                              ✓ Oznacz jako zrobione
+                            </button>
+                          ) : (
+                            <button
+                              style={secondaryStyle}
+                              onClick={() =>
+                                changeTaskStatus(task, "todo")
+                              }
+                            >
+                              ↶ Przywróć
+                            </button>
+                          )}
+
+                          <button
+                            style={{
+                              ...secondaryStyle,
+                              color: "#8b2635",
+                              borderColor: "#dfc1c5",
+                            }}
+                            onClick={() => deleteTask(task)}
+                          >
+                            Usuń
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </>
         )}
 
         {activeTab === "Więcej" && (
           <>
-            <h2>Więcej</h2>
+            {moreSection !== "menu" && (
+              <button
+                style={{
+                  ...secondaryStyle,
+                  marginBottom: 15,
+                }}
+                onClick={() => setMoreSection("menu")}
+              >
+                ← Wróć
+              </button>
+            )}
 
-            <div style={{ display: "grid", gap: 10 }}>
-              {[
-                "Ogłoszenia",
-                "Kadra",
-                "Dokumenty",
-                "Ustawienia",
-              ].map((item) => (
-                <button
-                  key={item}
+            {moreSection === "menu" && (
+              <>
+                <div style={eyebrowStyle}>Centrum drużyny</div>
+                <h2 style={{ marginTop: 5 }}>Więcej</h2>
+
+                <div style={{ display: "grid", gap: 10 }}>
+                  <MoreMenuButton
+                    icon="📣"
+                    title="Ogłoszenia"
+                    subtitle={`${visibleAnnouncements.length} aktywnych`}
+                    onClick={() => setMoreSection("announcements")}
+                  />
+
+                  <MoreMenuButton
+                    icon="⚜️"
+                    title="Kadra"
+                    subtitle={`${staffPeople.length} osób`}
+                    onClick={() => setMoreSection("staff")}
+                  />
+
+                  {isAdmin && (
+                    <MoreMenuButton
+                      icon="👥"
+                      title="Użytkownicy"
+                      subtitle={`${people.length} kont`}
+                      onClick={() => setMoreSection("users")}
+                    />
+                  )}
+
+                  <MoreMenuButton
+                    icon="📄"
+                    title="Dokumenty"
+                    subtitle="zgody, regulaminy, pliki"
+                    onClick={() =>
+                      alert("Dokumenty dołączymy w kolejnym dużym update.")
+                    }
+                  />
+                </div>
+              </>
+            )}
+
+            {moreSection === "announcements" && (
+              <>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    gap: 12,
+                    alignItems: "center",
+                    marginBottom: 18,
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <div>
+                    <div style={eyebrowStyle}>Komunikaty</div>
+                    <h2 style={{ margin: "4px 0 0" }}>
+                      Ogłoszenia
+                    </h2>
+                  </div>
+
+                  {isAdmin && (
+                    <button
+                      style={primaryStyle}
+                      onClick={openAnnouncementForm}
+                    >
+                      + Ogłoszenie
+                    </button>
+                  )}
+                </div>
+
+                {visibleAnnouncements.length === 0 ? (
+                  <div
+                    style={{
+                      ...cardStyle,
+                      textAlign: "center",
+                      color: "#68736d",
+                    }}
+                  >
+                    Brak aktywnych ogłoszeń.
+                  </div>
+                ) : (
+                  <div style={{ display: "grid", gap: 11 }}>
+                    {visibleAnnouncements.map((item) => {
+                      const patrol = patrols.find(
+                        (p) => Number(p.id) === Number(item.patrol_id)
+                      );
+
+                      return (
+                        <div
+                          key={`announcement-${item.id}`}
+                          style={{
+                            ...cardStyle,
+                            borderLeft: item.important
+                              ? "5px solid #8b2635"
+                              : item.pinned
+                              ? "5px solid #b98a2f"
+                              : "5px solid #607b54",
+                          }}
+                        >
+                          <div style={eyebrowStyle}>
+                            {item.pinned ? "📌 " : ""}
+                            {item.whole_troop
+                              ? "CAŁA DRUŻYNA"
+                              : patrol?.name || "ZASTĘP"}
+                            {item.important ? " • WAŻNE" : ""}
+                          </div>
+
+                          <h3 style={{ margin: "7px 0 8px" }}>
+                            {item.title}
+                          </h3>
+
+                          <div
+                            style={{
+                              color: "#55635b",
+                              lineHeight: 1.65,
+                              whiteSpace: "pre-wrap",
+                            }}
+                          >
+                            {item.body}
+                          </div>
+
+                          {item.expires_at && (
+                            <div
+                              style={{
+                                marginTop: 10,
+                                color: "#7a837e",
+                                fontSize: 12,
+                              }}
+                            >
+                              Widoczne do: {formatDate(item.expires_at)}
+                            </div>
+                          )}
+
+                          {isAdmin && (
+                            <button
+                              style={{
+                                ...secondaryStyle,
+                                marginTop: 12,
+                                color: "#8b2635",
+                                borderColor: "#dfc1c5",
+                              }}
+                              onClick={() => deleteAnnouncement(item)}
+                            >
+                              Usuń
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            )}
+
+            {moreSection === "staff" && (
+              <>
+                <div style={eyebrowStyle}>Ludzie</div>
+                <h2 style={{ marginTop: 5 }}>Kadra</h2>
+
+                {staffPeople.length === 0 ? (
+                  <div style={cardStyle}>
+                    <p
+                      style={{
+                        margin: 0,
+                        color: "#68736d",
+                      }}
+                    >
+                      Kadra nie została jeszcze uzupełniona. Admin może
+                      oznaczyć osoby jako kadrę w sekcji Użytkownicy.
+                    </p>
+                  </div>
+                ) : (
+                  <div style={{ display: "grid", gap: 11 }}>
+                    {staffPeople.map((person) => {
+                      const membership = memberships.find(
+                        (item) => item.user_id === person.id
+                      );
+                      const patrol = patrols.find(
+                        (item) =>
+                          Number(item.id) ===
+                          Number(membership?.patrol_id)
+                      );
+                      const leaderPatrol = patrols.find(
+                        (item) => item.leader_id === person.id
+                      );
+
+                      return (
+                        <div
+                          key={`staff-${person.id}`}
+                          style={{
+                            ...cardStyle,
+                            borderLeft: "5px solid #173b2b",
+                          }}
+                        >
+                          <div style={eyebrowStyle}>
+                            {isAdminRole(person.role)
+                              ? "ADMIN"
+                              : "KADRA"}
+                          </div>
+
+                          <h3 style={{ margin: "7px 0 6px" }}>
+                            {person.full_name || "Nieuzupełniony profil"}
+                          </h3>
+
+                          <div
+                            style={{
+                              color: "#56635c",
+                              lineHeight: 1.65,
+                            }}
+                          >
+                            {person.function_title ||
+                              (leaderPatrol
+                                ? `Zastępowy/a — ${leaderPatrol.name}`
+                                : "Funkcja do uzupełnienia")}
+
+                            {patrol && (
+                              <>
+                                <br />
+                                ⚜️ {patrol.name}
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            )}
+
+            {moreSection === "users" && isAdmin && (
+              <>
+                <div style={eyebrowStyle}>Panel administratora</div>
+                <h2 style={{ marginTop: 5 }}>Użytkownicy</h2>
+
+                <div
                   style={{
                     ...cardStyle,
-                    border: 0,
-                    textAlign: "left",
-                    fontWeight: 800,
-                    fontSize: 16,
-                    cursor: "pointer",
-                    color: "#17231c",
+                    background: "#fff9e9",
+                    border: "1px solid #ead8a7",
+                    boxShadow: "none",
+                    marginBottom: 14,
+                    color: "#6f5722",
+                    lineHeight: 1.55,
                   }}
-                  onClick={() =>
-                    alert(
-                      `${item} — moduł podepniemy później.`
-                    )
-                  }
                 >
-                  {item} →
-                </button>
-              ))}
-            </div>
+                  Nowa osoba najpierw zakłada konto na ekranie logowania.
+                  Potem tutaj przypisujesz jej rolę, zastęp, funkcję i
+                  ewentualnie status zastępowego.
+                </div>
+
+                <div style={{ display: "grid", gap: 10 }}>
+                  {people.map((person) => {
+                    const membership = memberships.find(
+                      (item) => item.user_id === person.id
+                    );
+                    const patrol = patrols.find(
+                      (item) =>
+                        Number(item.id) ===
+                        Number(membership?.patrol_id)
+                    );
+                    const leaderPatrol = patrols.find(
+                      (item) => item.leader_id === person.id
+                    );
+
+                    return (
+                      <button
+                        key={`person-${person.id}`}
+                        onClick={() => openUserEditor(person)}
+                        style={{
+                          ...cardStyle,
+                          border: 0,
+                          width: "100%",
+                          textAlign: "left",
+                          cursor: "pointer",
+                          color: "#17231c",
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            gap: 10,
+                          }}
+                        >
+                          <div>
+                            <strong>
+                              {person.full_name || "Nowe konto"}
+                            </strong>
+
+                            <div
+                              style={{
+                                marginTop: 5,
+                                color: "#66726b",
+                                fontSize: 13,
+                              }}
+                            >
+                              {normalizeRole(person.role) || "member"}
+                              {patrol ? ` • ${patrol.name}` : ""}
+                              {leaderPatrol
+                                ? ` • zastępowy/a ${leaderPatrol.name}`
+                                : ""}
+                            </div>
+                          </div>
+
+                          <span style={{ color: "#8b2635" }}>Edytuj →</span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            )}
           </>
         )}
       </section>
@@ -1924,6 +3026,459 @@ export default function Home() {
         activeTab={activeTab}
         setActiveTab={setActiveTab}
       />
+
+      {announcementModalOpen && (
+        <ModalBackground
+          close={() =>
+            !announcementSaving &&
+            setAnnouncementModalOpen(false)
+          }
+        >
+          <div style={eyebrowStyle}>Panel administratora</div>
+          <h2 style={{ marginTop: 5 }}>Nowe ogłoszenie</h2>
+
+          <div style={{ display: "grid", gap: 15 }}>
+            <label>
+              <strong>Tytuł</strong>
+              <input
+                value={announcementForm.title}
+                onChange={(event) =>
+                  setAnnouncementForm({
+                    ...announcementForm,
+                    title: event.target.value,
+                  })
+                }
+                placeholder="np. Zmiana miejsca zbiórki"
+                style={inputStyle}
+              />
+            </label>
+
+            <label>
+              <strong>Treść</strong>
+              <textarea
+                rows={5}
+                value={announcementForm.body}
+                onChange={(event) =>
+                  setAnnouncementForm({
+                    ...announcementForm,
+                    body: event.target.value,
+                  })
+                }
+                placeholder="Napisz komunikat..."
+                style={{
+                  ...inputStyle,
+                  resize: "vertical",
+                  fontFamily: "inherit",
+                }}
+              />
+            </label>
+
+            <label>
+              <strong>Dla kogo?</strong>
+              <select
+                value={announcementForm.audience}
+                onChange={(event) =>
+                  setAnnouncementForm({
+                    ...announcementForm,
+                    audience: event.target.value,
+                  })
+                }
+                style={inputStyle}
+              >
+                <option value="whole">Cała drużyna</option>
+                <option value="patrol">Konkretny zastęp</option>
+              </select>
+            </label>
+
+            {announcementForm.audience === "patrol" && (
+              <label>
+                <strong>Zastęp</strong>
+                <select
+                  value={announcementForm.patrolId}
+                  onChange={(event) =>
+                    setAnnouncementForm({
+                      ...announcementForm,
+                      patrolId: event.target.value,
+                    })
+                  }
+                  style={inputStyle}
+                >
+                  {patrols.map((patrol) => (
+                    <option
+                      key={patrol.id}
+                      value={String(patrol.id)}
+                    >
+                      {patrol.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+
+            <label>
+              <strong>Widoczne do</strong>
+              <input
+                type="date"
+                value={announcementForm.expiresAt}
+                onChange={(event) =>
+                  setAnnouncementForm({
+                    ...announcementForm,
+                    expiresAt: event.target.value,
+                  })
+                }
+                style={inputStyle}
+              />
+            </label>
+
+            <label
+              style={{
+                display: "flex",
+                gap: 10,
+                alignItems: "center",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={announcementForm.important}
+                onChange={(event) =>
+                  setAnnouncementForm({
+                    ...announcementForm,
+                    important: event.target.checked,
+                  })
+                }
+              />
+              <strong>Ważne ogłoszenie</strong>
+            </label>
+
+            <label
+              style={{
+                display: "flex",
+                gap: 10,
+                alignItems: "center",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={announcementForm.pinned}
+                onChange={(event) =>
+                  setAnnouncementForm({
+                    ...announcementForm,
+                    pinned: event.target.checked,
+                  })
+                }
+              />
+              <strong>Przypnij na górze</strong>
+            </label>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 9,
+              }}
+            >
+              <button
+                style={secondaryStyle}
+                disabled={announcementSaving}
+                onClick={() => setAnnouncementModalOpen(false)}
+              >
+                Anuluj
+              </button>
+
+              <button
+                style={primaryStyle}
+                disabled={announcementSaving}
+                onClick={saveAnnouncement}
+              >
+                {announcementSaving ? "Zapisuję..." : "Opublikuj"}
+              </button>
+            </div>
+          </div>
+        </ModalBackground>
+      )}
+
+      {userEditor && (
+        <ModalBackground
+          close={() => !userSaving && setUserEditor(null)}
+        >
+          <div style={eyebrowStyle}>Panel administratora</div>
+          <h2 style={{ marginTop: 5 }}>Edytuj użytkownika</h2>
+
+          <div style={{ display: "grid", gap: 15 }}>
+            <label>
+              <strong>Imię i nazwisko</strong>
+              <input
+                value={userEditor.fullName}
+                onChange={(event) =>
+                  setUserEditor({
+                    ...userEditor,
+                    fullName: event.target.value,
+                  })
+                }
+                style={inputStyle}
+              />
+            </label>
+
+            <label>
+              <strong>Rola w aplikacji</strong>
+              <select
+                value={userEditor.role}
+                onChange={(event) =>
+                  setUserEditor({
+                    ...userEditor,
+                    role: event.target.value,
+                  })
+                }
+                style={inputStyle}
+              >
+                <option value="member">Harcerz / członek</option>
+                <option value="parent">Rodzic</option>
+                <option value="admin">Admin</option>
+              </select>
+            </label>
+
+            <label>
+              <strong>Funkcja</strong>
+              <input
+                value={userEditor.functionTitle}
+                onChange={(event) =>
+                  setUserEditor({
+                    ...userEditor,
+                    functionTitle: event.target.value,
+                  })
+                }
+                placeholder="np. przyboczny, zastępowa..."
+                style={inputStyle}
+              />
+            </label>
+
+            <label
+              style={{
+                display: "flex",
+                gap: 10,
+                alignItems: "center",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={userEditor.isStaff}
+                onChange={(event) =>
+                  setUserEditor({
+                    ...userEditor,
+                    isStaff: event.target.checked,
+                  })
+                }
+              />
+              <strong>Pokaż w zakładce Kadra</strong>
+            </label>
+
+            <label>
+              <strong>Zastęp</strong>
+              <select
+                value={userEditor.patrolId}
+                onChange={(event) =>
+                  setUserEditor({
+                    ...userEditor,
+                    patrolId: event.target.value,
+                  })
+                }
+                style={inputStyle}
+              >
+                <option value="">Brak przypisania</option>
+                {patrols.map((patrol) => (
+                  <option
+                    key={patrol.id}
+                    value={String(patrol.id)}
+                  >
+                    {patrol.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              <strong>Zastępowy/a</strong>
+              <select
+                value={userEditor.leaderPatrolId}
+                onChange={(event) =>
+                  setUserEditor({
+                    ...userEditor,
+                    leaderPatrolId: event.target.value,
+                  })
+                }
+                style={inputStyle}
+              >
+                <option value="">Nie jest zastępowym</option>
+                {patrols.map((patrol) => (
+                  <option
+                    key={patrol.id}
+                    value={String(patrol.id)}
+                  >
+                    {patrol.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 9,
+              }}
+            >
+              <button
+                style={secondaryStyle}
+                disabled={userSaving}
+                onClick={() => setUserEditor(null)}
+              >
+                Anuluj
+              </button>
+
+              <button
+                style={primaryStyle}
+                disabled={userSaving}
+                onClick={saveUserEditor}
+              >
+                {userSaving ? "Zapisuję..." : "Zapisz"}
+              </button>
+            </div>
+          </div>
+        </ModalBackground>
+      )}
+
+      {taskModalOpen && (
+        <ModalBackground
+          close={() =>
+            !taskSaving && setTaskModalOpen(false)
+          }
+        >
+          <div style={eyebrowStyle}>Panel administratora</div>
+          <h2 style={{ marginTop: 5 }}>Nowe zadanie</h2>
+
+          <div style={{ display: "grid", gap: 15 }}>
+            <label>
+              <strong>Nazwa zadania</strong>
+              <input
+                type="text"
+                value={taskForm.title}
+                onChange={(event) =>
+                  setTaskForm({
+                    ...taskForm,
+                    title: event.target.value,
+                  })
+                }
+                placeholder="np. Przygotować apteczkę na INO"
+                style={inputStyle}
+              />
+            </label>
+
+            <label>
+              <strong>Dla kogo?</strong>
+              <select
+                value={taskForm.audience}
+                onChange={(event) =>
+                  setTaskForm({
+                    ...taskForm,
+                    audience: event.target.value,
+                  })
+                }
+                style={inputStyle}
+              >
+                <option value="whole">Cała drużyna</option>
+                <option value="patrol">Konkretny zastęp</option>
+              </select>
+            </label>
+
+            {taskForm.audience === "patrol" && (
+              <label>
+                <strong>Zastęp</strong>
+                <select
+                  value={taskForm.patrolId}
+                  onChange={(event) =>
+                    setTaskForm({
+                      ...taskForm,
+                      patrolId: event.target.value,
+                    })
+                  }
+                  style={inputStyle}
+                >
+                  {patrols.map((patrol) => (
+                    <option
+                      key={patrol.id}
+                      value={String(patrol.id)}
+                    >
+                      {patrol.name} — {patrol.leader_name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+
+            <label>
+              <strong>Termin</strong>
+              <input
+                type="date"
+                value={taskForm.dueDate}
+                onChange={(event) =>
+                  setTaskForm({
+                    ...taskForm,
+                    dueDate: event.target.value,
+                  })
+                }
+                style={inputStyle}
+              />
+            </label>
+
+            <label>
+              <strong>Opis</strong>
+              <textarea
+                rows={4}
+                value={taskForm.description}
+                onChange={(event) =>
+                  setTaskForm({
+                    ...taskForm,
+                    description: event.target.value,
+                  })
+                }
+                placeholder="Co dokładnie trzeba zrobić?"
+                style={{
+                  ...inputStyle,
+                  resize: "vertical",
+                  fontFamily: "inherit",
+                }}
+              />
+            </label>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 9,
+              }}
+            >
+              <button
+                style={secondaryStyle}
+                disabled={taskSaving}
+                onClick={() => setTaskModalOpen(false)}
+              >
+                Anuluj
+              </button>
+
+              <button
+                style={{
+                  ...primaryStyle,
+                  opacity: taskSaving ? 0.6 : 1,
+                }}
+                disabled={taskSaving}
+                onClick={saveTask}
+              >
+                {taskSaving ? "Zapisuję..." : "Dodaj zadanie"}
+              </button>
+            </div>
+          </div>
+        </ModalBackground>
+      )}
 
       {eventModalOpen && (
         <ModalBackground
@@ -2557,12 +4112,12 @@ export default function Home() {
               <strong>Kto rezerwuje?</strong>
               <select
                 value={form.reserver}
-                onChange={(event) => setForm({ ...form, reserver: event.target.value })}
+                onChange={(event) =>
+                  handleReservationAudienceChange(event.target.value)
+                }
                 style={inputStyle}
               >
-                <option value="whole" disabled={!isAdmin}>
-                  Cała drużyna{!isAdmin ? " — tylko admin" : ""}
-                </option>
+                <option value="whole">Cała drużyna</option>
 
                 {patrols.map((patrol) => (
                   <option key={patrol.id} value={String(patrol.id)}>
@@ -2581,7 +4136,7 @@ export default function Home() {
               >
                 {isAdmin
                   ? "Jako admin możesz rezerwować dla całej drużyny albo dowolnego zastępu."
-                  : "Możesz rezerwować tylko jako zastęp. Opcja „Cała drużyna” jest zarezerwowana dla admina."}
+                  : "„Cała drużyna” wymaga potwierdzenia uprawnień administratora. Pozostali rezerwują jako zastęp."}
               </div>
             </label>
 
@@ -2742,6 +4297,12 @@ function LoginScreen({
   login,
   error,
   loggingIn,
+  signupMode,
+  setSignupMode,
+  signupName,
+  setSignupName,
+  signupMessage,
+  register,
 }) {
   return (
     <main
@@ -2787,13 +4348,31 @@ function LoginScreen({
             marginBottom: 25,
           }}
         >
-          Zaloguj się do swojej części drużyny.
+          {signupMode
+            ? "Załóż konto. Po rejestracji admin przypisze Ci zastęp i uprawnienia."
+            : "Zaloguj się do swojej części drużyny."}
         </p>
 
         <form
-          onSubmit={login}
+          onSubmit={signupMode ? register : login}
           style={{ display: "grid", gap: 15 }}
         >
+          {signupMode && (
+            <label>
+              <strong>Imię i nazwisko</strong>
+
+              <input
+                type="text"
+                required
+                value={signupName}
+                onChange={(event) =>
+                  setSignupName(event.target.value)
+                }
+                style={inputStyle}
+              />
+            </label>
+          )}
+
           <label>
             <strong>E-mail</strong>
 
@@ -2822,6 +4401,20 @@ function LoginScreen({
             />
           </label>
 
+          {signupMessage && (
+            <div
+              style={{
+                background: "#eaf3ec",
+                color: "#315843",
+                borderRadius: 12,
+                padding: 12,
+                fontSize: 14,
+              }}
+            >
+              {signupMessage}
+            </div>
+          )}
+
           {error && (
             <div
               style={{
@@ -2846,7 +4439,27 @@ function LoginScreen({
               opacity: loggingIn ? 0.6 : 1,
             }}
           >
-            {loggingIn ? "Logowanie..." : "Zaloguj się"}
+            {loggingIn
+              ? "Proszę czekać..."
+              : signupMode
+              ? "Załóż konto"
+              : "Zaloguj się"}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setSignupMode(!signupMode);
+              setLoginError("");
+            }}
+            style={{
+              ...secondaryStyle,
+              width: "100%",
+            }}
+          >
+            {signupMode
+              ? "Mam już konto — zaloguj się"
+              : "Nie mam konta — załóż konto"}
           </button>
         </form>
       </div>
@@ -3275,6 +4888,56 @@ function ModalBackground({ children, close }) {
         {children}
       </div>
     </div>
+  );
+}
+
+function MoreMenuButton({
+  icon,
+  title,
+  subtitle,
+  onClick,
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        ...cardStyle,
+        border: 0,
+        width: "100%",
+        textAlign: "left",
+        cursor: "pointer",
+        color: "#17231c",
+        display: "flex",
+        alignItems: "center",
+        gap: 13,
+      }}
+    >
+      <span
+        style={{
+          fontSize: 24,
+          width: 38,
+          textAlign: "center",
+        }}
+      >
+        {icon}
+      </span>
+
+      <span style={{ flex: 1 }}>
+        <strong style={{ fontSize: 16 }}>{title}</strong>
+        <span
+          style={{
+            display: "block",
+            marginTop: 4,
+            color: "#6b756f",
+            fontSize: 12,
+          }}
+        >
+          {subtitle}
+        </span>
+      </span>
+
+      <span style={{ color: "#8b2635" }}>→</span>
+    </button>
   );
 }
 
