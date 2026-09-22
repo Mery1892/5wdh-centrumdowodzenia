@@ -357,6 +357,7 @@ export default function Home() {
   const [pushStatus, setPushStatus] = useState("unknown");
   const [pushBusy, setPushBusy] = useState(false);
   const [membershipDues, setMembershipDues] = useState([]);
+  const [eventPayments, setEventPayments] = useState([]);
   const [duesSaving, setDuesSaving] = useState(false);
   const [parentChildren, setParentChildren] = useState([]);
   const [parentPatrols, setParentPatrols] = useState([]);
@@ -480,6 +481,7 @@ export default function Home() {
       loadAnnouncements();
       loadNotifications();
       loadMembershipDues();
+      loadEventPayments();
       loadParentChildren();
       loadParentPatrols();
       loadParentChildRequests();
@@ -1697,6 +1699,64 @@ export default function Home() {
     }
   }
 
+  function paymentForEventUser(eventId, userId) {
+    return eventPayments.find(
+      (item) =>
+        Number(item.event_id) === Number(eventId) &&
+        item.user_id === userId
+    );
+  }
+
+  async function setEventPaymentStatus(eventId, userId, paid) {
+    const admin = await verifyAdminAccess();
+    if (!admin) return;
+
+    try {
+      const { error } = await supabase
+        .from("event_payments")
+        .upsert(
+          {
+            event_id: eventId,
+            user_id: userId,
+            paid: Boolean(paid),
+            paid_at: paid ? new Date().toISOString() : null,
+            marked_by: session.user.id,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "event_id,user_id" }
+        );
+
+      if (error) throw error;
+      await loadEventPayments();
+    } catch (error) {
+      console.error("Błąd oznaczania płatności:", error);
+      alert(`Nie udało się zapisać płatności.\n\n${error?.message || ""}`);
+    }
+  }
+
+  async function setParentSignupPaymentStatus(signup, paid) {
+    const admin = await verifyAdminAccess();
+    if (!admin || !signup?.id) return;
+
+    try {
+      const { error } = await supabase
+        .from("parent_event_signups")
+        .update({
+          paid: Boolean(paid),
+          paid_at: paid ? new Date().toISOString() : null,
+          payment_marked_by: session.user.id,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", signup.id);
+
+      if (error) throw error;
+      await loadParentEventSignups();
+    } catch (error) {
+      console.error("Błąd płatności dziecka:", error);
+      alert(`Nie udało się zapisać płatności.\n\n${error?.message || ""}`);
+    }
+  }
+
   function assignmentsForEvent(eventId) {
     return eventAssignments
       .filter((item) => Number(item.event_id) === Number(eventId))
@@ -1957,6 +2017,25 @@ export default function Home() {
     setMembershipDues(data || []);
   }
 
+  async function loadEventPayments() {
+    if (!session?.user) return;
+
+    const { data, error } = await supabase
+      .from("event_payments")
+      .select(
+        "id,event_id,user_id,paid,paid_at,marked_by,created_at,updated_at"
+      )
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("Błąd pobierania płatności wydarzeń:", error);
+      return;
+    }
+
+    setEventPayments(data || []);
+  }
+
+
   function dueFor(userId, year, quarter) {
     return membershipDues.find(
       (item) =>
@@ -2070,7 +2149,7 @@ export default function Home() {
     const { data, error } = await supabase
       .from("parent_event_signups")
       .select(
-        "id,event_id,parent_id,child_name,status,admin_note,reviewed_by,reviewed_at,created_at,updated_at"
+        "id,event_id,parent_id,child_name,status,admin_note,reviewed_by,reviewed_at,paid,paid_at,payment_marked_by,created_at,updated_at"
       )
       .order("created_at", { ascending: false });
 
@@ -2936,6 +3015,7 @@ export default function Home() {
         loadPeople(),
         loadSchedule(),
         loadMembershipDues(),
+        loadEventPayments(),
         loadParentChildren(),
         loadParentPatrols(),
         loadParentChildRequests(),
@@ -3746,6 +3826,7 @@ export default function Home() {
         loadParentEventSignups={loadParentEventSignups}
         reservations={reservations}
         membershipDues={membershipDues}
+        eventPayments={eventPayments}
         announcements={announcements}
         documents={documents}
         currentUserId={session.user.id}
@@ -7244,7 +7325,7 @@ export default function Home() {
                     marginBottom: 10,
                   }}
                 >
-                  Jeśli dziecko ma już konto, możesz je tu przypisać.
+                  Jeśli dziecko ma konto, możesz przypisać maksymalnie dwoje dzieci.
                 </div>
 
                 <div style={{ display: "grid", gap: 8 }}>
@@ -7272,6 +7353,14 @@ export default function Home() {
                             type="checkbox"
                             checked={checked}
                             onChange={(event) => {
+                              if (
+                                event.target.checked &&
+                                (userEditor.childIds || []).length >= 2
+                              ) {
+                                alert("Do jednego rodzica możesz przypisać maksymalnie dwoje dzieci.");
+                                return;
+                              }
+
                               const next = event.target.checked
                                 ? [
                                     ...(userEditor.childIds || []),
@@ -8627,27 +8716,59 @@ export default function Home() {
                 </h3>
 
                 <div style={{ display: "grid", gap: 7 }}>
-                  {assignmentsForEvent(eventDetails.id).map((item) => (
-                    <div
-                      key={`roster-${item.id}`}
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        gap: 10,
-                      }}
-                    >
-                      <strong>{item.personName}</strong>
-                      <span
+                  {assignmentsForEvent(eventDetails.id).map((item) => {
+                    const payment = paymentForEventUser(
+                      eventDetails.id,
+                      item.user_id
+                    );
+
+                    return (
+                      <div
+                        key={`roster-${item.id}`}
                         style={{
-                          color: "#68736d",
-                          fontSize: 12,
-                          fontWeight: 800,
+                          display: "flex",
+                          justifyContent: "space-between",
+                          gap: 10,
+                          alignItems: "center",
+                          flexWrap: "wrap",
                         }}
                       >
-                        {assignmentTypeLabel(item.assignment_type)}
-                      </span>
-                    </div>
-                  ))}
+                        <div>
+                          <strong>{item.personName}</strong>
+                          <div
+                            style={{
+                              color: "#68736d",
+                              fontSize: 12,
+                              fontWeight: 800,
+                            }}
+                          >
+                            {assignmentTypeLabel(item.assignment_type)}
+                          </div>
+                        </div>
+
+                        {eventDetails.cost && isAdmin && (
+                          <button
+                            style={
+                              payment?.paid
+                                ? primaryStyle
+                                : secondaryStyle
+                            }
+                            onClick={() =>
+                              setEventPaymentStatus(
+                                eventDetails.id,
+                                item.user_id,
+                                !payment?.paid
+                              )
+                            }
+                          >
+                            {payment?.paid
+                              ? "✓ Opłacone"
+                              : "Nieopłacone"}
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -8934,15 +9055,44 @@ export default function Home() {
                         }}
                       >
                         <strong>{signup.child_name}</strong>
-                        <span
+                        <div
                           style={{
-                            color: "#315d3e",
-                            fontSize: 11,
-                            fontWeight: 900,
+                            display: "flex",
+                            gap: 6,
+                            alignItems: "center",
+                            flexWrap: "wrap",
                           }}
                         >
-                          DZIECKO • JEDZIE
-                        </span>
+                          <span
+                            style={{
+                              color: "#315d3e",
+                              fontSize: 11,
+                              fontWeight: 900,
+                            }}
+                          >
+                            DZIECKO • JEDZIE
+                          </span>
+
+                          {eventDetails.cost && isAdmin && (
+                            <button
+                              style={
+                                signup.paid
+                                  ? primaryStyle
+                                  : secondaryStyle
+                              }
+                              onClick={() =>
+                                setParentSignupPaymentStatus(
+                                  signup,
+                                  !signup.paid
+                                )
+                              }
+                            >
+                              {signup.paid
+                                ? "✓ Opłacone"
+                                : "Nieopłacone"}
+                            </button>
+                          )}
+                        </div>
                       </div>
                     ))}
                 </div>
@@ -10053,6 +10203,7 @@ function ParentApp({
   loadParentEventSignups,
   reservations = [],
   membershipDues = [],
+  eventPayments = [],
   announcements = [],
   documents = [],
   currentUserId,
@@ -10068,6 +10219,7 @@ function ParentApp({
   const [parentSignupSaving, setParentSignupSaving] = useState(false);
   const [parentEventAnnouncements, setParentEventAnnouncements] = useState([]);
   const [parentEventLoading, setParentEventLoading] = useState(false);
+  const [selectedChildId, setSelectedChildId] = useState("");
 
   const today = dateToString(new Date());
 
@@ -10135,6 +10287,116 @@ function ParentApp({
   const myParentEventSignups = parentEventSignups.filter(
     (item) => item.parent_id === currentUserId
   );
+
+
+  const linkedChildIds = parentChildren
+    .filter((link) => link.parent_id === currentUserId)
+    .map((link) => link.child_id);
+
+  const linkedChildren = people.filter((person) =>
+    linkedChildIds.includes(person.id)
+  );
+
+  useEffect(() => {
+    if (!selectedChildId && linkedChildren[0]?.id) {
+      setSelectedChildId(linkedChildren[0].id);
+    }
+
+    if (
+      selectedChildId &&
+      !linkedChildren.some((child) => child.id === selectedChildId)
+    ) {
+      setSelectedChildId(linkedChildren[0]?.id || "");
+    }
+  }, [
+    selectedChildId,
+    linkedChildren.map((child) => child.id).join("|"),
+  ]);
+
+  const selectedChild =
+    linkedChildren.find((child) => child.id === selectedChildId) ||
+    linkedChildren[0] ||
+    null;
+
+  const selectedChildMembership = selectedChild
+    ? memberships.find((item) => item.user_id === selectedChild.id)
+    : null;
+
+  const selectedChildPatrol = patrols.find(
+    (patrol) =>
+      Number(patrol.id) ===
+      Number(selectedChildMembership?.patrol_id)
+  );
+
+  function selectedChildDue(quarter) {
+    if (!selectedChild) return null;
+
+    const year = new Date().getFullYear();
+
+    return membershipDues.find(
+      (item) =>
+        item.user_id === selectedChild.id &&
+        Number(item.due_year) === year &&
+        Number(item.due_quarter) === Number(quarter)
+    );
+  }
+
+  const selectedChildAssignmentEventIds = new Set(
+    selectedChild
+      ? eventAssignments
+          .filter((item) => item.user_id === selectedChild.id)
+          .map((item) => Number(item.event_id))
+      : []
+  );
+
+  const selectedChildName = selectedChild
+    ? (selectedChild.full_name || selectedChild.name || "")
+        .trim()
+        .toLowerCase()
+    : "";
+
+  const selectedChildParentSignups = selectedChildName
+    ? myParentEventSignups.filter(
+        (item) =>
+          item.child_name?.trim().toLowerCase() === selectedChildName
+      )
+    : [];
+
+  const selectedChildParentSignupEventIds = new Set(
+    selectedChildParentSignups
+      .filter((item) => item.status !== "rejected")
+      .map((item) => Number(item.event_id))
+  );
+
+  const selectedChildEvents = events
+    .filter(
+      (event) =>
+        selectedChildAssignmentEventIds.has(Number(event.id)) ||
+        selectedChildParentSignupEventIds.has(Number(event.id))
+    )
+    .sort((a, b) =>
+      String(b.event_date).localeCompare(String(a.event_date))
+    );
+
+  function childEventPayment(event) {
+    if (!selectedChild || !event?.cost) return null;
+
+    const accountPayment = eventPayments.find(
+      (item) =>
+        Number(item.event_id) === Number(event.id) &&
+        item.user_id === selectedChild.id
+    );
+
+    if (accountPayment) return Boolean(accountPayment.paid);
+
+    const namedSignup = selectedChildParentSignups.find(
+      (item) => Number(item.event_id) === Number(event.id)
+    );
+
+    if (namedSignup) return Boolean(namedSignup.paid);
+
+    return false;
+  }
 
   function eventAudienceLabel(event) {
     if (event.whole_troop) return "CAŁA DRUŻYNA";
@@ -10722,6 +10984,216 @@ function ParentApp({
           </>
         )}
 
+        {tab === "Dziecko" && (
+          <>
+            <div style={eyebrowStyle}>Informacje członkowskie</div>
+            <h2 style={{ marginTop: 5 }}>
+              {linkedChildren.length > 1 ? "Moje dzieci" : "Moje dziecko"}
+            </h2>
+
+            {linkedChildren.length === 0 ? (
+              <div style={{ ...cardStyle, color: "#68736d" }}>
+                Do konta rodzica nie przypisano jeszcze dziecka.
+              </div>
+            ) : (
+              <>
+                {linkedChildren.length > 1 && (
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 1fr",
+                      gap: 8,
+                      marginBottom: 14,
+                    }}
+                  >
+                    {linkedChildren.map((child) => (
+                      <button
+                        key={`child-switch-${child.id}`}
+                        style={
+                          selectedChild?.id === child.id
+                            ? primaryStyle
+                            : secondaryStyle
+                        }
+                        onClick={() => setSelectedChildId(child.id)}
+                      >
+                        {child.full_name || child.name || "Dziecko"}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                <div
+                  style={{
+                    ...cardStyle,
+                    borderLeft: "5px solid #607b54",
+                    marginBottom: 14,
+                  }}
+                >
+                  <div style={eyebrowStyle}>DANE</div>
+                  <h3 style={{ margin: "6px 0" }}>
+                    {selectedChild?.full_name ||
+                      selectedChild?.name ||
+                      "Dziecko"}
+                  </h3>
+
+                  <div style={{ lineHeight: 1.7, color: "#59675f" }}>
+                    Zastęp: {selectedChildPatrol?.name || "—"}
+                    <br />
+                    Numer członkowski:{" "}
+                    <strong>
+                      {selectedChild?.membership_number || "—"}
+                    </strong>
+                  </div>
+                </div>
+
+                <div style={eyebrowStyle}>SKŁADKI</div>
+
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gap: 8,
+                    marginTop: 8,
+                    marginBottom: 18,
+                  }}
+                >
+                  {[1, 2, 3, 4].map((quarter) => {
+                    const due = selectedChildDue(quarter);
+
+                    return (
+                      <div
+                        key={`child-due-${quarter}`}
+                        style={{
+                          ...cardStyle,
+                          boxShadow: "none",
+                          background: due?.paid
+                            ? "#f1f7f2"
+                            : "#fff8f8",
+                          border: due?.paid
+                            ? "1px solid #a9bbaa"
+                            : "1px solid #e1d0d2",
+                        }}
+                      >
+                        <strong>{quarterLabel(quarter)}</strong>
+                        <div
+                          style={{
+                            marginTop: 5,
+                            fontSize: 11,
+                            fontWeight: 900,
+                            color: due?.paid
+                              ? "#315d3e"
+                              : "#8b2635",
+                          }}
+                        >
+                          {due?.paid ? "OPŁACONA" : "NIEOPŁACONA"}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div style={eyebrowStyle}>WYDARZENIA I WYJAZDY</div>
+
+                {selectedChildEvents.length === 0 ? (
+                  <div
+                    style={{
+                      ...cardStyle,
+                      color: "#68736d",
+                      marginTop: 8,
+                    }}
+                  >
+                    Dziecko nie jest zapisane na żadne wydarzenie.
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      display: "grid",
+                      gap: 9,
+                      marginTop: 8,
+                    }}
+                  >
+                    {selectedChildEvents.map((event) => {
+                      const signup = selectedChildParentSignups.find(
+                        (item) =>
+                          Number(item.event_id) === Number(event.id)
+                      );
+                      const paid = childEventPayment(event);
+
+                      return (
+                        <div
+                          key={`child-event-${event.id}`}
+                          style={{
+                            ...cardStyle,
+                            borderLeft: "5px solid #8b2635",
+                          }}
+                        >
+                          <div style={eyebrowStyle}>
+                            {event.event_type?.toUpperCase()}
+                          </div>
+
+                          <h3 style={{ margin: "6px 0" }}>
+                            {event.title}
+                          </h3>
+
+                          <div
+                            style={{
+                              color: "#59675f",
+                              lineHeight: 1.6,
+                            }}
+                          >
+                            📅 {eventDateText(event)}
+                            <br />
+                            📍 {event.location}
+                          </div>
+
+                          <div
+                            style={{
+                              marginTop: 8,
+                              fontSize: 12,
+                              fontWeight: 900,
+                              color:
+                                signup?.status === "pending"
+                                  ? "#715818"
+                                  : signup?.status === "rejected"
+                                  ? "#8b2635"
+                                  : "#315d3e",
+                            }}
+                          >
+                            {signup
+                              ? parentSignupStatusLabel(signup.status)
+                              : "ZAPISANE"}
+                          </div>
+
+                          {event.cost && (
+                            <div
+                              style={{
+                                marginTop: 7,
+                                padding: 8,
+                                borderRadius: 10,
+                                background: paid
+                                  ? "#f1f7f2"
+                                  : "#fff8f8",
+                                color: paid
+                                  ? "#315d3e"
+                                  : "#8b2635",
+                                fontSize: 12,
+                                fontWeight: 900,
+                              }}
+                            >
+                              💰 {event.cost} •{" "}
+                              {paid ? "OPŁACONE" : "NIEOPŁACONE"}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        )}
+
         {tab === "Dokumenty" && (
           <>
             <div style={eyebrowStyle}>Zgody i pliki</div>
@@ -10766,7 +11238,7 @@ function ParentApp({
       </section>
 
       <BottomNav
-        tabs={["Moje", "Kalendarz", "Wyjazdy", "Ogłoszenia", "Dokumenty"]}
+        tabs={["Moje", "Kalendarz", "Wyjazdy", "Dziecko", "Ogłoszenia", "Dokumenty"]}
         activeTab={tab}
         setActiveTab={setTab}
       />
