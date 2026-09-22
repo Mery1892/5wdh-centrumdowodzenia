@@ -1549,21 +1549,12 @@ export default function Home() {
     setSignupSavingId(eventItem.id);
 
     try {
-      const { error: signupError } = await supabase
-        .from("event_signups")
-        .upsert(
-          {
-            event_id: eventItem.id,
-            user_id: session.user.id,
-            status: "pending",
-            admin_note: null,
-            reviewed_by: null,
-            reviewed_at: null,
-          },
-          {
-            onConflict: "event_id,user_id",
-          }
-        );
+      const { error: signupError } = await supabase.rpc(
+        "submit_own_event_signup",
+        {
+          target_event_id: Number(eventItem.id),
+        }
+      );
 
       if (signupError) throw signupError;
 
@@ -10837,9 +10828,9 @@ function ParentApp({
   }
 
   function parentSignupStatusLabel(status) {
-    if (status === "approved") return "ZATWIERDZONE";
-    if (status === "rejected") return "ODRZUCONE";
-    return "OCZEKUJE";
+    if (status === "approved") return "DZIECKO ZATWIERDZONE — JEDZIE";
+    if (status === "rejected") return "ZGŁOSZENIE ODRZUCONE";
+    return "CZEKA NA AKCEPTACJĘ";
   }
 
   async function openParentEvent(event) {
@@ -11799,6 +11790,15 @@ function ParentApp({
                         📅 {eventDateText(event)}
                         <br />
                         📍 {event.location}
+                        {event.signup_deadline && (
+                          <>
+                            <br />
+                            ⏳ Zgłoszenia do:{" "}
+                            <strong>
+                              {formatDate(event.signup_deadline)}
+                            </strong>
+                          </>
+                        )}
                       </div>
 
                       {mySignups.length > 0 && (
@@ -11823,7 +11823,16 @@ function ParentApp({
                                 style={{
                                   fontSize: 11,
                                   fontWeight: 900,
-                                  marginTop: 3,
+                                  marginTop: 5,
+                                  padding: "6px 8px",
+                                  borderRadius: 9,
+                                  display: "inline-block",
+                                  background:
+                                    signup.status === "approved"
+                                      ? "#eaf3eb"
+                                      : signup.status === "rejected"
+                                      ? "#f8e5e7"
+                                      : "#fff1c7",
                                   color:
                                     signup.status === "approved"
                                       ? "#315d3e"
@@ -12310,6 +12319,22 @@ function ParentApp({
             >
               <div style={eyebrowStyle}>ZGŁOSZENIA</div>
 
+              {selectedEvent.signup_deadline && (
+                <div
+                  style={{
+                    marginTop: 8,
+                    padding: 9,
+                    borderRadius: 10,
+                    background: "#fff7df",
+                    color: "#6e6040",
+                    fontWeight: 800,
+                  }}
+                >
+                  ⏳ Dziecko możesz zgłosić do{" "}
+                  {formatDate(selectedEvent.signup_deadline)}
+                </div>
+              )}
+
               {!selectedEvent.signup_enabled ? (
                 <div
                   style={{
@@ -12404,7 +12429,7 @@ function ParentApp({
                         <strong>{signup.child_name}</strong>
                         <div
                           style={{
-                            marginTop: 3,
+                            marginTop: 6,
                             fontSize: 11,
                             fontWeight: 900,
                             color:
@@ -12413,6 +12438,15 @@ function ParentApp({
                                 : signup.status === "rejected"
                                 ? "#8b2635"
                                 : "#715818",
+                            background:
+                              signup.status === "approved"
+                                ? "#eaf3eb"
+                                : signup.status === "rejected"
+                                ? "#f8e5e7"
+                                : "#fff1c7",
+                            borderRadius: 9,
+                            padding: "6px 8px",
+                            display: "inline-block",
                           }}
                         >
                           {parentSignupStatusLabel(signup.status)}
