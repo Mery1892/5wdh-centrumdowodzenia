@@ -485,8 +485,9 @@ export default function Home() {
       loadDocuments();
       checkPushStatus();
 
+      loadSchedule();
+
       if (role !== "parent") {
-        loadSchedule();
         loadTasks();
       }
     }
@@ -3611,6 +3612,7 @@ export default function Home() {
         parentPatrols={parentPatrols}
         parentChildRequests={parentChildRequests}
         loadParentChildRequests={loadParentChildRequests}
+        reservations={reservations}
         membershipDues={membershipDues}
         announcements={announcements}
         documents={documents}
@@ -9793,6 +9795,7 @@ function ParentApp({
   parentPatrols = [],
   parentChildRequests = [],
   loadParentChildRequests,
+  reservations = [],
   membershipDues = [],
   announcements = [],
   documents = [],
@@ -9887,6 +9890,20 @@ function ParentApp({
       myParentPatrolIds.includes(Number(item.patrol_id))
     );
   });
+
+
+  const myParentReservations = reservations
+    .filter(
+      (item) =>
+        !item.isEvent &&
+        item.date >= today &&
+        myParentPatrolIds.includes(Number(item.patrolId))
+    )
+    .sort((a, b) =>
+      `${a.date}T${a.time || "00:00"}`.localeCompare(
+        `${b.date}T${b.time || "00:00"}`
+      )
+    );
 
   const childAssignments = child
     ? eventAssignments.filter(
@@ -10093,6 +10110,41 @@ function ParentApp({
               </div>
             )}
 
+            {myParentReservations.length > 0 && (
+              <>
+                <h3 style={{ marginTop: 20 }}>Zbiórki zastępów</h3>
+
+                <div style={{ display: "grid", gap: 9 }}>
+                  {myParentReservations.slice(0, 8).map((item) => (
+                    <div
+                      key={`parent-reservation-${item.id}`}
+                      style={{
+                        ...cardStyle,
+                        borderLeft: "5px solid #607b54",
+                      }}
+                    >
+                      <div style={eyebrowStyle}>ZBIÓRKA • {item.patrol}</div>
+
+                      <div
+                        style={{
+                          marginTop: 6,
+                          color: "#59675f",
+                          lineHeight: 1.65,
+                        }}
+                      >
+                        📅 {formatDate(item.date)}
+                        <br />
+                        🕐 {item.time}
+                        {item.endTime ? `–${item.endTime}` : ""}
+                        <br />
+                        📍 {item.location}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+
             {myParentAnnouncements.length > 0 && (
               <>
                 <h3 style={{ marginTop: 20 }}>Ogłoszenia</h3>
@@ -10215,6 +10267,45 @@ function ParentApp({
                   </div>
                 ))}
               </div>
+            )}
+
+            {myParentReservations.length > 0 && (
+              <>
+                <h3 style={{ marginTop: 20 }}>
+                  Zbiórki przypisanych zastępów
+                </h3>
+
+                <div style={{ display: "grid", gap: 9 }}>
+                  {myParentReservations.map((item) => (
+                    <div
+                      key={`parent-calendar-res-${item.id}`}
+                      style={{
+                        ...cardStyle,
+                        borderLeft: "5px solid #607b54",
+                      }}
+                    >
+                      <div style={eyebrowStyle}>
+                        ZBIÓRKA • {item.patrol}
+                      </div>
+
+                      <div
+                        style={{
+                          marginTop: 6,
+                          color: "#59675f",
+                          lineHeight: 1.65,
+                        }}
+                      >
+                        📅 {formatDate(item.date)}
+                        <br />
+                        🕐 {item.time}
+                        {item.endTime ? `–${item.endTime}` : ""}
+                        <br />
+                        📍 {item.location}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
             )}
           </>
         )}
