@@ -10539,6 +10539,74 @@ function ParentApp({
     }
   }
 
+  const linkedChildrenEventEntries = linkedChildren
+    .flatMap((child) => {
+      const childName = (child.full_name || child.name || "")
+        .trim()
+        .toLowerCase();
+
+      const assignedEventIds = new Set(
+        eventAssignments
+          .filter((item) => item.user_id === child.id)
+          .map((item) => Number(item.event_id))
+      );
+
+      const namedSignups = myParentEventSignups.filter(
+        (item) =>
+          item.child_name?.trim().toLowerCase() === childName
+      );
+
+      const namedSignupMap = new Map(
+        namedSignups.map((item) => [Number(item.event_id), item])
+      );
+
+      const eventIds = new Set([
+        ...assignedEventIds,
+        ...namedSignups
+          .filter((item) => item.status !== "rejected")
+          .map((item) => Number(item.event_id)),
+      ]);
+
+      return events
+        .filter(
+          (event) =>
+            eventIds.has(Number(event.id)) &&
+            event.event_date >= today
+        )
+        .map((event) => {
+          const signup = namedSignupMap.get(Number(event.id)) || null;
+          const accountPayment = eventPayments.find(
+            (item) =>
+              Number(item.event_id) === Number(event.id) &&
+              item.user_id === child.id
+          );
+
+          const paid = event.cost
+            ? accountPayment
+              ? Boolean(accountPayment.paid)
+              : signup
+              ? Boolean(signup.paid)
+              : false
+            : null;
+
+          return {
+            child,
+            event,
+            signup,
+            paid,
+          };
+        });
+    })
+    .sort((a, b) =>
+      `${a.event.event_date}T${normalizeTime(
+        a.event.start_time
+      )}`.localeCompare(
+        `${b.event.event_date}T${normalizeTime(
+          b.event.start_time
+        )}`
+      )
+    );
+
   const nextImportantAnnouncement =
     myParentAnnouncements.find((item) => item.pinned) ||
     myParentAnnouncements.find((item) => item.important) ||
@@ -10640,6 +10708,117 @@ function ParentApp({
                 }}
               >
                 <strong>🔔 Powiadomienia włączone</strong>
+              </div>
+            )}
+
+            <h3 style={{ marginTop: 20 }}>
+              Gdzie zgłoszone są moje dzieci?
+            </h3>
+
+            {linkedChildrenEventEntries.length === 0 ? (
+              <div
+                style={{
+                  ...cardStyle,
+                  color: "#68736d",
+                  marginBottom: 14,
+                }}
+              >
+                Żadne z przypisanych dzieci nie jest obecnie zapisane
+                na nadchodzące wydarzenie.
+              </div>
+            ) : (
+              <div
+                style={{
+                  display: "grid",
+                  gap: 9,
+                  marginBottom: 18,
+                }}
+              >
+                {linkedChildrenEventEntries.map(
+                  ({ child, event, signup, paid }) => (
+                    <button
+                      key={`parent-home-child-event-${child.id}-${event.id}`}
+                      onClick={() => openParentEvent(event)}
+                      style={{
+                        ...cardStyle,
+                        border: 0,
+                        borderLeft: "5px solid #8b2635",
+                        textAlign: "left",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <div style={eyebrowStyle}>
+                        {child.full_name || child.name || "Dziecko"}
+                      </div>
+
+                      <h3 style={{ margin: "6px 0" }}>
+                        {event.title}
+                      </h3>
+
+                      <div
+                        style={{
+                          color: "#59675f",
+                          lineHeight: 1.6,
+                        }}
+                      >
+                        📅 {eventDateText(event)}
+                        <br />
+                        📍 {event.location}
+                      </div>
+
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: 7,
+                          flexWrap: "wrap",
+                          marginTop: 8,
+                        }}
+                      >
+                        <span
+                          style={{
+                            padding: "5px 8px",
+                            borderRadius: 999,
+                            background:
+                              signup?.status === "pending"
+                                ? "#fff1c7"
+                                : "#eaf3eb",
+                            color:
+                              signup?.status === "pending"
+                                ? "#715818"
+                                : "#315d3e",
+                            fontSize: 11,
+                            fontWeight: 900,
+                          }}
+                        >
+                          {signup?.status === "pending"
+                            ? "OCZEKUJE"
+                            : "ZAPISANE"}
+                        </span>
+
+                        {event.cost && (
+                          <span
+                            style={{
+                              padding: "5px 8px",
+                              borderRadius: 999,
+                              background: paid
+                                ? "#eaf3eb"
+                                : "#f8e5e7",
+                              color: paid
+                                ? "#315d3e"
+                                : "#8b2635",
+                              fontSize: 11,
+                              fontWeight: 900,
+                            }}
+                          >
+                            {paid
+                              ? "OPŁACONE"
+                              : "NIEOPŁACONE"}
+                          </span>
+                        )}
+                      </div>
+                    </button>
+                  )
+                )}
               </div>
             )}
 
