@@ -1424,26 +1424,52 @@ export default function Home() {
   async function submitEventSignup(eventItem) {
     if (!session?.user || !eventItem?.id) return;
 
+    if (!eventItem.signup_enabled) {
+      alert("Zgłoszenia na to wydarzenie są zamknięte.");
+      return;
+    }
+
+    if (
+      eventItem.signup_deadline &&
+      eventItem.signup_deadline < today
+    ) {
+      alert("Termin zgłoszeń na to wydarzenie już minął.");
+      return;
+    }
+
     setSignupSavingId(eventItem.id);
 
     try {
-      await supabase
-        .from("event_signups")
-        .delete()
-        .eq("event_id", eventItem.id)
-        .eq("user_id", session.user.id);
+      const existing = mySignupForEvent(eventItem.id);
 
-      const { error } = await supabase
-        .from("event_signups")
-        .insert({
-          event_id: eventItem.id,
-          user_id: session.user.id,
-          status: "pending",
-        });
+      if (existing?.id) {
+        const { error: updateError } = await supabase
+          .from("event_signups")
+          .update({
+            status: "pending",
+            admin_note: null,
+            reviewed_by: null,
+            reviewed_at: null,
+          })
+          .eq("id", existing.id)
+          .eq("user_id", session.user.id);
 
-      if (error) throw error;
+        if (updateError) throw updateError;
+      } else {
+        const { error: insertError } = await supabase
+          .from("event_signups")
+          .insert({
+            event_id: eventItem.id,
+            user_id: session.user.id,
+            status: "pending",
+          });
+
+        if (insertError) throw insertError;
+      }
 
       await loadEvents();
+
+      alert("Zgłoszenie zostało wysłane do akceptacji.");
     } catch (error) {
       console.error("Błąd zgłoszenia na wydarzenie:", error);
       alert(
@@ -8510,7 +8536,10 @@ export default function Home() {
                       >
                         Zgłoszenia są obecnie zamknięte.
                       </div>
-                    ) : mySignupForEvent(eventDetails.id) ? (
+                    ) : mySignupForEvent(eventDetails.id) &&
+                      !["withdrawn", "rejected"].includes(
+                        mySignupForEvent(eventDetails.id)?.status
+                      ) ? (
                       <div>
                         <div
                           style={{
@@ -8519,9 +8548,6 @@ export default function Home() {
                               mySignupForEvent(eventDetails.id)?.status ===
                               "approved"
                                 ? "#315d3e"
-                                : mySignupForEvent(eventDetails.id)?.status ===
-                                  "rejected"
-                                ? "#8b2635"
                                 : "#715818",
                           }}
                         >
@@ -8531,8 +8557,8 @@ export default function Home() {
                           )}
                         </div>
 
-                        {mySignupForEvent(eventDetails.id)?.status !==
-                          "approved" && (
+                        {mySignupForEvent(eventDetails.id)?.status ===
+                          "pending" && (
                           <button
                             style={{
                               ...secondaryStyle,
@@ -8572,6 +8598,8 @@ export default function Home() {
                           : eventDetails.signup_deadline &&
                             eventDetails.signup_deadline < today
                           ? "Zgłoszenia zamknięte"
+                          : mySignupForEvent(eventDetails.id)
+                          ? "🙋 Zgłoś się ponownie"
                           : "🙋 Zgłoś się"}
                       </button>
                     )}
