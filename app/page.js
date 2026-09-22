@@ -4021,6 +4021,57 @@ export default function Home() {
       item.date >= today
   );
 
+
+  const myPatrolReservations = reservations
+    .filter(
+      (item) =>
+        !item.isEvent &&
+        item.date >= today &&
+        (
+          isAdmin ||
+          myPatrolIds.includes(Number(item.patrolId))
+        )
+    )
+    .sort((a, b) =>
+      `${a.date}T${a.time || "00:00"}`.localeCompare(
+        `${b.date}T${b.time || "00:00"}`
+      )
+    );
+
+  const myEventEntries = events
+    .filter((event) => event.event_date >= today)
+    .map((event) => {
+      const signup = eventSignups.find(
+        (item) =>
+          Number(item.event_id) === Number(event.id) &&
+          item.user_id === session.user.id
+      );
+
+      const assignment = eventAssignments.find(
+        (item) =>
+          Number(item.event_id) === Number(event.id) &&
+          item.user_id === session.user.id
+      );
+
+      if (!signup && !assignment) return null;
+
+      return {
+        event,
+        signup,
+        assignment,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) =>
+      `${a.event.event_date}T${normalizeTime(
+        a.event.start_time
+      )}`.localeCompare(
+        `${b.event.event_date}T${normalizeTime(
+          b.event.start_time
+        )}`
+      )
+    );
+
   const pendingReservations = reservations
     .filter(
       (item) =>
@@ -4606,25 +4657,26 @@ export default function Home() {
           </>
         )}
 
+
         {activeTab === "Moje" && (
           <>
             <div
               style={{
                 display: "flex",
                 justifyContent: "space-between",
-                alignItems: "center",
+                alignItems: "flex-start",
                 gap: 12,
-                marginBottom: 18,
+                marginBottom: 10,
                 flexWrap: "wrap",
               }}
             >
               <div>
                 <div style={eyebrowStyle}>
-                  Twoje centrum
+                  {isAdmin ? "Panel administratora" : "Twoje centrum"}
                 </div>
 
                 <h2 style={{ margin: "4px 0 0" }}>
-                  Co mnie czeka?
+                  {isAdmin ? "Najważniejsze teraz" : "Co u Ciebie?"}
                 </h2>
               </div>
 
@@ -4638,6 +4690,353 @@ export default function Home() {
               )}
             </div>
 
+            {!isAdmin && (
+              <p
+                style={{
+                  marginTop: 0,
+                  marginBottom: 16,
+                  color: "#68736d",
+                  lineHeight: 1.5,
+                  fontSize: 13,
+                }}
+              >
+                Tu znajdziesz najbliższe zbiórki swojego zastępu,
+                swoje zapisy na wydarzenia oraz to, co dzieje się w drużynie.
+              </p>
+            )}
+
+            {/* 1. ZBIÓRKI ZASTĘPU */}
+            <div
+              style={{
+                ...cardStyle,
+                marginBottom: 18,
+                background: "#f3f7f3",
+                border: "2px solid #607b54",
+                boxShadow: "0 8px 24px rgba(23,59,43,.10)",
+              }}
+            >
+              <div style={eyebrowStyle}>
+                {isAdmin ? "ZBIÓRKI ZASTĘPÓW" : "TWÓJ ZASTĘP"}
+              </div>
+
+              <h3 style={{ margin: "5px 0 10px" }}>
+                🌲 Najbliższe zbiórki
+              </h3>
+
+              {myPatrolReservations.length === 0 ? (
+                <div
+                  style={{
+                    color: "#68736d",
+                    lineHeight: 1.5,
+                  }}
+                >
+                  Nie ma jeszcze zaplanowanej najbliższej zbiórki.
+                </div>
+              ) : (
+                <div style={{ display: "grid", gap: 9 }}>
+                  {myPatrolReservations.slice(0, 4).map((reservation, index) => (
+                    <button
+                      key={`my-patrol-reservation-${reservation.id}`}
+                      onClick={() => setDetailsOpen(reservation)}
+                      style={{
+                        background: "white",
+                        border:
+                          index === 0
+                            ? "1px solid #9fb2a5"
+                            : "1px solid #e1e5e1",
+                        borderRadius: 14,
+                        padding: 12,
+                        textAlign: "left",
+                        cursor: "pointer",
+                        color: "#17231c",
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 900,
+                          color: "#315d3e",
+                          letterSpacing: 1,
+                        }}
+                      >
+                        {index === 0 ? "NAJBLIŻSZA ZBIÓRKA" : "KOLEJNA ZBIÓRKA"} •{" "}
+                        {reservation.patrol}
+                      </div>
+
+                      <strong
+                        style={{
+                          display: "block",
+                          marginTop: 5,
+                          fontSize: 16,
+                        }}
+                      >
+                        📅 {formatDate(reservation.date)}
+                      </strong>
+
+                      <div
+                        style={{
+                          marginTop: 4,
+                          color: "#59675f",
+                          lineHeight: 1.6,
+                        }}
+                      >
+                        🕐 {reservation.time}
+                        {reservation.endTime
+                          ? `–${reservation.endTime}`
+                          : ""}
+                        <br />
+                        📍 {reservation.location}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* 2. MOJE ZAPISY */}
+            {!isAdmin && (
+              <div style={{ marginBottom: 18 }}>
+                <div style={eyebrowStyle}>MOJE WYDARZENIA</div>
+                <h3 style={{ margin: "5px 0 10px" }}>
+                  🎒 Moje zapisy
+                </h3>
+
+                {myEventEntries.length === 0 ? (
+                  <div
+                    style={{
+                      ...cardStyle,
+                      color: "#68736d",
+                    }}
+                  >
+                    Nie masz jeszcze żadnych zapisów na nadchodzące wydarzenia.
+                  </div>
+                ) : (
+                  <div style={{ display: "grid", gap: 9 }}>
+                    {myEventEntries.map(({ event, signup, assignment }) => {
+                      const status =
+                        assignment || signup?.status === "approved"
+                          ? "JEDZIESZ"
+                          : signup?.status === "pending"
+                          ? "CZEKA NA AKCEPTACJĘ"
+                          : signup?.status === "rejected"
+                          ? "ODRZUCONE"
+                          : "ZAPIS";
+
+                      const payment = paymentForEventUser(
+                        event.id,
+                        session.user.id
+                      );
+
+                      return (
+                        <button
+                          key={`my-signup-${event.id}`}
+                          onClick={() => setEventDetails(event)}
+                          style={{
+                            ...cardStyle,
+                            border: 0,
+                            borderLeft:
+                              status === "JEDZIESZ"
+                                ? "5px solid #315d3e"
+                                : status === "CZEKA NA AKCEPTACJĘ"
+                                ? "5px solid #b98a2f"
+                                : "5px solid #8b2635",
+                            textAlign: "left",
+                            cursor: "pointer",
+                            color: "#17231c",
+                            padding: 12,
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              gap: 8,
+                              alignItems: "flex-start",
+                            }}
+                          >
+                            <div>
+                              <div style={eyebrowStyle}>
+                                {eventTypeLabel(event.event_type).toUpperCase()}
+                              </div>
+
+                              <strong
+                                style={{
+                                  display: "block",
+                                  marginTop: 4,
+                                  fontSize: 15,
+                                }}
+                              >
+                                {event.title}
+                              </strong>
+                            </div>
+
+                            <span
+                              style={{
+                                padding: "5px 8px",
+                                borderRadius: 999,
+                                background:
+                                  status === "JEDZIESZ"
+                                    ? "#eaf3eb"
+                                    : status === "CZEKA NA AKCEPTACJĘ"
+                                    ? "#fff1c7"
+                                    : "#f8e5e7",
+                                color:
+                                  status === "JEDZIESZ"
+                                    ? "#315d3e"
+                                    : status === "CZEKA NA AKCEPTACJĘ"
+                                    ? "#715818"
+                                    : "#8b2635",
+                                fontSize: 10,
+                                fontWeight: 900,
+                                whiteSpace: "nowrap",
+                              }}
+                            >
+                              {status}
+                            </span>
+                          </div>
+
+                          <div
+                            style={{
+                              marginTop: 6,
+                              color: "#59675f",
+                              lineHeight: 1.55,
+                              fontSize: 13,
+                            }}
+                          >
+                            📅 {formatDate(event.event_date)}
+                            <br />
+                            📍 {event.location}
+                          </div>
+
+                          {event.cost && (
+                            <div
+                              style={{
+                                marginTop: 7,
+                                fontSize: 11,
+                                fontWeight: 900,
+                                color: payment?.paid
+                                  ? "#315d3e"
+                                  : "#8b2635",
+                              }}
+                            >
+                              💰 {payment?.paid
+                                ? "OPŁACONE"
+                                : "NIEOPŁACONE"}
+                            </div>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 3. NADCHODZĄCE WYDARZENIA */}
+            <div style={{ marginBottom: 18 }}>
+              <div style={eyebrowStyle}>DRUŻYNA</div>
+              <h3 style={{ margin: "5px 0 10px" }}>
+                📅 Nadchodzące wydarzenia
+              </h3>
+
+              {visibleEvents.length === 0 ? (
+                <div
+                  style={{
+                    ...cardStyle,
+                    color: "#68736d",
+                  }}
+                >
+                  Na razie nie ma żadnych nadchodzących wydarzeń.
+                </div>
+              ) : (
+                <div style={{ display: "grid", gap: 9 }}>
+                  {visibleEvents
+                    .slice()
+                    .sort((a, b) =>
+                      `${a.event_date}T${normalizeTime(
+                        a.start_time
+                      )}`.localeCompare(
+                        `${b.event_date}T${normalizeTime(
+                          b.start_time
+                        )}`
+                      )
+                    )
+                    .slice(0, 6)
+                    .map((eventItem) => {
+                      const patrol = patrols.find(
+                        (patrolItem) =>
+                          Number(patrolItem.id) ===
+                          Number(eventItem.patrol_id)
+                      );
+
+                      return (
+                        <button
+                          key={`my-upcoming-${eventItem.id}`}
+                          onClick={() => setEventDetails(eventItem)}
+                          style={{
+                            ...cardStyle,
+                            border: 0,
+                            borderLeft: eventItem.whole_troop
+                              ? "5px solid #8b2635"
+                              : "5px solid #607b54",
+                            textAlign: "left",
+                            cursor: "pointer",
+                            color: "#17231c",
+                            padding: 12,
+                          }}
+                        >
+                          <div style={eyebrowStyle}>
+                            {eventItem.whole_troop
+                              ? "CAŁA DRUŻYNA"
+                              : isAdmin
+                              ? `ZASTĘP • ${patrol?.name || "Zastęp"}`
+                              : "TWÓJ ZASTĘP"}
+                          </div>
+
+                          <strong
+                            style={{
+                              display: "block",
+                              marginTop: 4,
+                              fontSize: 15,
+                            }}
+                          >
+                            {eventItem.title}
+                          </strong>
+
+                          <div
+                            style={{
+                              marginTop: 5,
+                              lineHeight: 1.55,
+                              color: "#526159",
+                              fontSize: 13,
+                            }}
+                          >
+                            📅 {formatDate(eventItem.event_date)}
+                            {(eventItem.start_time ||
+                              eventItem.end_time) && (
+                              <>
+                                {" "}• 🕐{" "}
+                                {eventItem.start_time
+                                  ? normalizeTime(eventItem.start_time)
+                                  : ""}
+                                {eventItem.end_time
+                                  ? `–${normalizeTime(
+                                      eventItem.end_time
+                                    )}`
+                                  : ""}
+                              </>
+                            )}
+                            <br />
+                            📍 {eventItem.location}
+                          </div>
+                        </button>
+                      );
+                    })}
+                </div>
+              )}
+            </div>
+
+            {/* 4. WAŻNE OGŁOSZENIE */}
             {importantAnnouncement && (
               <button
                 onClick={() => {
@@ -4655,6 +5054,7 @@ export default function Home() {
                   cursor: "pointer",
                   marginBottom: 14,
                   color: "#17231c",
+                  background: "#fffaf0",
                 }}
               >
                 <div style={eyebrowStyle}>
@@ -4678,238 +5078,30 @@ export default function Home() {
               </button>
             )}
 
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-                gap: 9,
-                marginBottom: 16,
-              }}
-            >
-              <MiniStat
-                value={visibleEvents.length}
-                label="wydarzenia"
-              />
-              <MiniStat
-                value={ownReservations.length}
-                label="rezerwacje"
-              />
-              <MiniStat
-                value={upcomingTrips.length}
-                label="wyjazdy"
-              />
-              <MiniStat
-                value={openTasks.length}
-                label="zadania"
-              />
-            </div>
-
-            {nextTrip && (
+            {!isAdmin && openTasks.length > 0 && (
               <button
-                onClick={() => setEventDetails(nextTrip)}
+                onClick={() => setActiveTab("Zadania")}
                 style={{
                   ...cardStyle,
                   width: "100%",
-                  border: 0,
-                  background: "#173b2b",
-                  color: "white",
+                  border: "1px solid #d8dfda",
                   textAlign: "left",
                   cursor: "pointer",
-                  marginBottom: 16,
+                  color: "#17231c",
                 }}
               >
-                <div
+                <div style={eyebrowStyle}>DO ZROBIENIA</div>
+                <strong
                   style={{
-                    fontSize: 10,
-                    fontWeight: 900,
-                    letterSpacing: 1.3,
-                    color: "#d9bd72",
+                    display: "block",
+                    marginTop: 4,
                   }}
                 >
-                  NAJBLIŻSZY WYJAZD • {tripCountdownLabel(nextTrip.event_date).toUpperCase()}
-                </div>
-
-                <div
-                  style={{
-                    fontSize: 20,
-                    fontWeight: 900,
-                    marginTop: 7,
-                  }}
-                >
-                  {nextTrip.title}
-                </div>
-
-                <div
-                  style={{
-                    marginTop: 7,
-                    color: "#d9e3dd",
-                    lineHeight: 1.6,
-                  }}
-                >
-                  📅 {formatDate(nextTrip.event_date)}
-                  <br />
-                  📍 {nextTrip.location}
-                  {nextTrip.cost ? ` • 💰 ${nextTrip.cost}` : ""}
-                </div>
+                  Masz {openTasks.length}{" "}
+                  {openTasks.length === 1 ? "zadanie" : "zadań"}
+                </strong>
               </button>
             )}
-
-            {myItems.length === 0 && (
-              <div
-                style={{
-                  ...cardStyle,
-                  color: "#68736d",
-                  textAlign: "center",
-                }}
-              >
-                Na razie nic tutaj nie ma.
-              </div>
-            )}
-
-            <div style={{ display: "grid", gap: 12 }}>
-              {myItems.map((item) => {
-                if (item.kind === "reservation") {
-                  const reservation = item.data;
-
-                  return (
-                    <button
-                      key={`reservation-${reservation.id}`}
-                      onClick={() =>
-                        setDetailsOpen(reservation)
-                      }
-                      style={{
-                        ...cardStyle,
-                        border: 0,
-                        borderLeft: "5px solid #b98a2f",
-                        textAlign: "left",
-                        cursor: "pointer",
-                        color: "#17231c",
-                      }}
-                    >
-                      <div style={eyebrowStyle}>
-                        MOJA REZERWACJA
-                      </div>
-
-                      <h3
-                        style={{
-                          margin: "7px 0 8px",
-                          fontSize: 19,
-                        }}
-                      >
-                        {reservation.patrol}
-                      </h3>
-
-                      <div
-                        style={{
-                          lineHeight: 1.7,
-                          color: "#526159",
-                        }}
-                      >
-                        📅 {formatDate(reservation.date)}
-                        <br />
-                        🕐 {reservation.time}–
-                        {reservation.endTime ||
-                          addMinutes(
-                            reservation.time,
-                            30
-                          )}
-                        <br />
-                        📍 {reservation.location}
-                      </div>
-                    </button>
-                  );
-                }
-
-                const eventItem = item.data;
-
-                const patrol = patrols.find(
-                  (patrolItem) =>
-                    Number(patrolItem.id) ===
-                    Number(eventItem.patrol_id)
-                );
-
-                return (
-                  <button
-                    key={`event-${eventItem.id}`}
-                    onClick={() =>
-                      setEventDetails(eventItem)
-                    }
-                    style={{
-                      ...cardStyle,
-                      border: 0,
-                      borderLeft: eventItem.whole_troop
-                        ? "5px solid #8b2635"
-                        : "5px solid #607b54",
-                      textAlign: "left",
-                      cursor: "pointer",
-                      color: "#17231c",
-                    }}
-                  >
-                    <div style={eyebrowStyle}>
-                      {eventItem.whole_troop
-                        ? "CAŁA DRUŻYNA"
-                        : isAdmin
-                        ? `ZASTĘP • ${
-                            patrol?.name || "Zastęp"
-                          }`
-                        : "TWÓJ ZASTĘP"}
-                    </div>
-
-                    <h3
-                      style={{
-                        margin: "7px 0 8px",
-                        fontSize: 19,
-                      }}
-                    >
-                      {eventItem.title}
-                    </h3>
-
-                    <div
-                      style={{
-                        lineHeight: 1.7,
-                        color: "#526159",
-                      }}
-                    >
-                      📅 {formatDate(
-                        eventItem.event_date
-                      )}
-                      <br />
-
-                      🕐 {normalizeTime(
-                        eventItem.start_time
-                      )}
-                      {eventItem.end_time
-                        ? `–${normalizeTime(
-                            eventItem.end_time
-                          )}`
-                        : ""}
-                      <br />
-
-                      📍 {eventItem.location}
-
-                      {eventItem.what_to_bring && (
-                        <>
-                          <br />
-                          🎒 {eventItem.what_to_bring}
-                        </>
-                      )}
-
-                      {eventItem.cost && (
-                        <>
-                          <br />
-                          💰 {eventItem.cost}
-                          {eventItem.payment_deadline
-                            ? ` • do ${formatDate(
-                                eventItem.payment_deadline
-                              )}`
-                            : ""}
-                        </>
-                      )}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
           </>
         )}
 
