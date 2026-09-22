@@ -10707,71 +10707,322 @@ function ParentApp({
       <AppHeader subtitle="Strefa rodzica" logout={logout} />
 
       <section style={containerPadding}>
+
         {tab === "Moje" && (
           <>
             <div style={eyebrowStyle}>Panel rodzica</div>
-            <h2 style={{ marginTop: 5 }}>Co, gdzie i kiedy?</h2>
+            <h2 style={{ marginTop: 5 }}>Najważniejsze teraz</h2>
 
-            {nextImportantAnnouncement && (
-              <div
-                style={{
-                  ...cardStyle,
-                  marginBottom: 14,
-                  background: "#fff7e3",
-                  borderLeft: "5px solid #b98a2f",
-                }}
-              >
-                <div style={eyebrowStyle}>
-                  {nextImportantAnnouncement.important
-                    ? "WAŻNE OGŁOSZENIE"
-                    : "OGŁOSZENIE"}
-                </div>
+            <p
+              style={{
+                marginTop: -4,
+                marginBottom: 16,
+                color: "#68736d",
+                lineHeight: 1.5,
+                fontSize: 13,
+              }}
+            >
+              Tu znajdziesz najbliższe zbiórki, wydarzenia, zapisy dzieci
+              oraz szybki podgląd kalendarza.
+            </p>
 
-                <h3 style={{ margin: "6px 0" }}>
-                  {nextImportantAnnouncement.title}
-                </h3>
-
-                <div
-                  style={{
-                    color: "#5f665f",
-                    lineHeight: 1.55,
-                    whiteSpace: "pre-wrap",
-                  }}
-                >
-                  {nextImportantAnnouncement.body}
-                </div>
-              </div>
-            )}
-
+            {/* 1. ZBIÓRKI ZASTĘPÓW — NAJWAŻNIEJSZE */}
             <div
               style={{
                 ...cardStyle,
-                marginBottom: 14,
-                background: "#f7f5ee",
-                boxShadow: "none",
+                marginBottom: 18,
+                background: "#f3f7f3",
+                border: "2px solid #607b54",
+                boxShadow: "0 8px 24px rgba(23,59,43,.10)",
               }}
             >
-              <strong>Przypisane zastępy</strong>
               <div
                 style={{
-                  marginTop: 6,
-                  color: "#657169",
-                  lineHeight: 1.55,
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: 10,
+                  alignItems: "center",
+                  marginBottom: 10,
                 }}
               >
-                {myParentPatrolNames.length
-                  ? myParentPatrolNames.join(", ")
-                  : "Brak przypisanego zastępu. W kalendarzu nadal zobaczysz wydarzenia drużyny."}
+                <div>
+                  <div style={eyebrowStyle}>NAJWAŻNIEJSZE</div>
+                  <h3 style={{ margin: "4px 0 0" }}>🌲 Zbiórki zastępów</h3>
+                </div>
+
+                {myParentPatrolNames.length > 0 && (
+                  <span
+                    style={{
+                      fontSize: 10,
+                      fontWeight: 900,
+                      color: "#315d3e",
+                      background: "#e3ede4",
+                      borderRadius: 999,
+                      padding: "6px 9px",
+                    }}
+                  >
+                    {myParentPatrolNames.join(" • ")}
+                  </span>
+                )}
               </div>
+
+              {myParentReservations.length === 0 ? (
+                <div
+                  style={{
+                    color: "#68736d",
+                    lineHeight: 1.5,
+                    padding: "8px 0 2px",
+                  }}
+                >
+                  Na razie nie ma zaplanowanej zbiórki przypisanego zastępu.
+                </div>
+              ) : (
+                <div style={{ display: "grid", gap: 9 }}>
+                  {myParentReservations.slice(0, 4).map((item, index) => (
+                    <div
+                      key={`parent-top-reservation-${item.id}`}
+                      style={{
+                        background: index === 0 ? "white" : "#fafbf8",
+                        borderRadius: 14,
+                        padding: index === 0 ? 13 : 10,
+                        border:
+                          index === 0
+                            ? "1px solid #a9bbaa"
+                            : "1px solid #e3e8e3",
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 900,
+                          letterSpacing: 1,
+                          color: "#315d3e",
+                        }}
+                      >
+                        {index === 0 ? "NAJBLIŻSZA ZBIÓRKA" : "KOLEJNA ZBIÓRKA"} •{" "}
+                        {item.patrol}
+                      </div>
+
+                      <div
+                        style={{
+                          marginTop: 6,
+                          fontSize: index === 0 ? 16 : 14,
+                          fontWeight: 900,
+                          color: "#17231c",
+                        }}
+                      >
+                        📅 {formatDate(item.date)}
+                      </div>
+
+                      <div
+                        style={{
+                          marginTop: 4,
+                          color: "#59675f",
+                          lineHeight: 1.6,
+                        }}
+                      >
+                        🕐 {item.time}
+                        {item.endTime ? `–${item.endTime}` : ""}
+                        <br />
+                        📍 {item.location}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
-            <div style={{ marginTop: 16, marginBottom: 18 }}>
-              <div style={eyebrowStyle}>KALENDARZ</div>
+            {/* 2. NADCHODZĄCE WYDARZENIA */}
+            <div style={{ marginBottom: 18 }}>
+              <div style={eyebrowStyle}>CO PRZED NAMI?</div>
+              <h3 style={{ margin: "5px 0 10px" }}>📅 Nadchodzące wydarzenia</h3>
+
+              {relevantEvents.length === 0 ? (
+                <div style={{ ...cardStyle, color: "#68736d" }}>
+                  Brak nadchodzących wydarzeń.
+                </div>
+              ) : (
+                <div style={{ display: "grid", gap: 9 }}>
+                  {relevantEvents.slice(0, 5).map((event) => (
+                    <button
+                      key={`parent-home-event-${event.id}`}
+                      onClick={() => openParentEvent(event)}
+                      style={{
+                        ...cardStyle,
+                        border: 0,
+                        borderLeft: "5px solid #607b54",
+                        textAlign: "left",
+                        cursor: "pointer",
+                        padding: 12,
+                      }}
+                    >
+                      <div style={eyebrowStyle}>
+                        {eventAudienceLabel(event)}
+                      </div>
+
+                      <strong
+                        style={{
+                          display: "block",
+                          marginTop: 4,
+                          fontSize: 15,
+                        }}
+                      >
+                        {event.title}
+                      </strong>
+
+                      <div
+                        style={{
+                          marginTop: 5,
+                          color: "#59675f",
+                          lineHeight: 1.55,
+                          fontSize: 13,
+                        }}
+                      >
+                        📅 {eventDateText(event)}
+                        {(event.start_time || event.end_time) && (
+                          <>
+                            {" "}• 🕐{" "}
+                            {event.start_time
+                              ? normalizeTime(event.start_time)
+                              : ""}
+                            {event.end_time
+                              ? `–${normalizeTime(event.end_time)}`
+                              : ""}
+                          </>
+                        )}
+                        <br />
+                        📍 {event.location}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* 3. DZIECI — GDZIE SĄ ZAPISANE */}
+            <div style={{ marginBottom: 18 }}>
+              <div style={eyebrowStyle}>MOJE DZIECI</div>
+              <h3 style={{ margin: "5px 0 10px" }}>🎒 Moje zapisy</h3>
+
+              {linkedChildrenEventEntries.length === 0 ? (
+                <div
+                  style={{
+                    ...cardStyle,
+                    color: "#68736d",
+                  }}
+                >
+                  Żadne z przypisanych dzieci nie jest teraz zapisane na
+                  nadchodzący wyjazd lub wydarzenie.
+                </div>
+              ) : (
+                <div style={{ display: "grid", gap: 9 }}>
+                  {linkedChildrenEventEntries.map(
+                    ({ child, event, signup, paid }) => (
+                      <button
+                        key={`parent-home-child-event-${child.id}-${event.id}`}
+                        onClick={() => openParentEvent(event)}
+                        style={{
+                          ...cardStyle,
+                          border: 0,
+                          borderLeft: "5px solid #8b2635",
+                          textAlign: "left",
+                          cursor: "pointer",
+                          padding: 12,
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            gap: 8,
+                            alignItems: "flex-start",
+                          }}
+                        >
+                          <div>
+                            <div
+                              style={{
+                                fontSize: 11,
+                                fontWeight: 900,
+                                color: "#8b2635",
+                              }}
+                            >
+                              {child.full_name || child.name || "Dziecko"}
+                            </div>
+
+                            <strong
+                              style={{
+                                display: "block",
+                                marginTop: 4,
+                                fontSize: 15,
+                              }}
+                            >
+                              {event.title}
+                            </strong>
+                          </div>
+
+                          <span
+                            style={{
+                              padding: "5px 8px",
+                              borderRadius: 999,
+                              background:
+                                signup?.status === "pending"
+                                  ? "#fff1c7"
+                                  : "#eaf3eb",
+                              color:
+                                signup?.status === "pending"
+                                  ? "#715818"
+                                  : "#315d3e",
+                              fontSize: 10,
+                              fontWeight: 900,
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {signup?.status === "pending"
+                              ? "CZEKA NA AKCEPTACJĘ"
+                              : "DZIECKO ZAPISANE"}
+                          </span>
+                        </div>
+
+                        <div
+                          style={{
+                            marginTop: 6,
+                            color: "#59675f",
+                            lineHeight: 1.55,
+                            fontSize: 13,
+                          }}
+                        >
+                          📅 {eventDateText(event)}
+                          <br />
+                          📍 {event.location}
+                        </div>
+
+                        {event.cost && (
+                          <div
+                            style={{
+                              marginTop: 7,
+                              fontSize: 11,
+                              fontWeight: 900,
+                              color: paid ? "#315d3e" : "#8b2635",
+                            }}
+                          >
+                            💰 {paid ? "OPŁACONE" : "NIEOPŁACONE"}
+                          </div>
+                        )}
+                      </button>
+                    )
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* 4. KALENDARZ */}
+            <div style={{ marginBottom: 18 }}>
+              <div style={eyebrowStyle}>SZYBKI PODGLĄD</div>
+              <h3 style={{ margin: "5px 0 10px" }}>🗓 Kalendarz</h3>
 
               <div
                 style={{
                   ...cardStyle,
-                  marginTop: 8,
                   padding: 14,
                 }}
               >
@@ -10884,10 +11135,10 @@ function ParentApp({
                             marginTop: 3,
                           }}
                         >
-                          {hasChild && (
+                          {hasReservation && (
                             <Dot
                               color={
-                                selected ? "#f1a5ae" : "#9d293b"
+                                selected ? "#f3d899" : "#b98a2f"
                               }
                             />
                           )}
@@ -10900,10 +11151,10 @@ function ParentApp({
                             />
                           )}
 
-                          {hasReservation && (
+                          {hasChild && (
                             <Dot
                               color={
-                                selected ? "#f3d899" : "#b98a2f"
+                                selected ? "#f1a5ae" : "#9d293b"
                               }
                             />
                           )}
@@ -10925,9 +11176,9 @@ function ParentApp({
                     flexWrap: "wrap",
                   }}
                 >
-                  <LegendDot color="#9d293b" label="Moje dziecko" />
-                  <LegendDot color="#607b54" label="Wydarzenie" />
                   <LegendDot color="#b98a2f" label="Zbiórka zastępu" />
+                  <LegendDot color="#607b54" label="Wydarzenie" />
+                  <LegendDot color="#9d293b" label="Moje dziecko" />
                 </div>
 
                 <div
@@ -11024,6 +11275,39 @@ function ParentApp({
               </div>
             </div>
 
+            {/* 5. WAŻNE OGŁOSZENIE */}
+            {nextImportantAnnouncement && (
+              <div
+                style={{
+                  ...cardStyle,
+                  marginBottom: 14,
+                  background: "#fff7e3",
+                  borderLeft: "5px solid #b98a2f",
+                }}
+              >
+                <div style={eyebrowStyle}>
+                  {nextImportantAnnouncement.important
+                    ? "WAŻNE OGŁOSZENIE"
+                    : "OGŁOSZENIE"}
+                </div>
+
+                <h3 style={{ margin: "6px 0" }}>
+                  {nextImportantAnnouncement.title}
+                </h3>
+
+                <div
+                  style={{
+                    color: "#5f665f",
+                    lineHeight: 1.55,
+                    whiteSpace: "pre-wrap",
+                  }}
+                >
+                  {nextImportantAnnouncement.body}
+                </div>
+              </div>
+            )}
+
+            {/* 6. POWIADOMIENIA */}
             {pushStatus !== "enabled" ? (
               <div
                 style={{
@@ -11058,201 +11342,6 @@ function ParentApp({
               >
                 <strong>🔔 Powiadomienia włączone</strong>
               </div>
-            )}
-
-            <h3 style={{ marginTop: 20 }}>
-              Gdzie zgłoszone są moje dzieci?
-            </h3>
-
-            {linkedChildrenEventEntries.length === 0 ? (
-              <div
-                style={{
-                  ...cardStyle,
-                  color: "#68736d",
-                  marginBottom: 14,
-                }}
-              >
-                Żadne z przypisanych dzieci nie jest obecnie zapisane
-                na nadchodzące wydarzenie.
-              </div>
-            ) : (
-              <div
-                style={{
-                  display: "grid",
-                  gap: 9,
-                  marginBottom: 18,
-                }}
-              >
-                {linkedChildrenEventEntries.map(
-                  ({ child, event, signup, paid }) => (
-                    <button
-                      key={`parent-home-child-event-${child.id}-${event.id}`}
-                      onClick={() => openParentEvent(event)}
-                      style={{
-                        ...cardStyle,
-                        border: 0,
-                        borderLeft: "5px solid #8b2635",
-                        textAlign: "left",
-                        cursor: "pointer",
-                      }}
-                    >
-                      <div style={eyebrowStyle}>
-                        {child.full_name || child.name || "Dziecko"}
-                      </div>
-
-                      <h3 style={{ margin: "6px 0" }}>
-                        {event.title}
-                      </h3>
-
-                      <div
-                        style={{
-                          color: "#59675f",
-                          lineHeight: 1.6,
-                        }}
-                      >
-                        📅 {eventDateText(event)}
-                        <br />
-                        📍 {event.location}
-                      </div>
-
-                      <div
-                        style={{
-                          display: "flex",
-                          gap: 7,
-                          flexWrap: "wrap",
-                          marginTop: 8,
-                        }}
-                      >
-                        <span
-                          style={{
-                            padding: "5px 8px",
-                            borderRadius: 999,
-                            background:
-                              signup?.status === "pending"
-                                ? "#fff1c7"
-                                : "#eaf3eb",
-                            color:
-                              signup?.status === "pending"
-                                ? "#715818"
-                                : "#315d3e",
-                            fontSize: 11,
-                            fontWeight: 900,
-                          }}
-                        >
-                          {signup?.status === "pending"
-                            ? "OCZEKUJE"
-                            : "ZAPISANE"}
-                        </span>
-
-                        {event.cost && (
-                          <span
-                            style={{
-                              padding: "5px 8px",
-                              borderRadius: 999,
-                              background: paid
-                                ? "#eaf3eb"
-                                : "#f8e5e7",
-                              color: paid
-                                ? "#315d3e"
-                                : "#8b2635",
-                              fontSize: 11,
-                              fontWeight: 900,
-                            }}
-                          >
-                            {paid
-                              ? "OPŁACONE"
-                              : "NIEOPŁACONE"}
-                          </span>
-                        )}
-                      </div>
-                    </button>
-                  )
-                )}
-              </div>
-            )}
-
-            <h3>Najbliższe wydarzenia</h3>
-
-            {relevantEvents.length === 0 ? (
-              <div style={{ ...cardStyle, color: "#68736d" }}>
-                Brak nadchodzących wydarzeń.
-              </div>
-            ) : (
-              <div style={{ display: "grid", gap: 10 }}>
-                {relevantEvents.slice(0, 6).map((event) => (
-                  <button
-                    key={`parent-home-event-${event.id}`}
-                    onClick={() => openParentEvent(event)}
-                    style={{
-                      ...cardStyle,
-                      border: 0,
-                      borderLeft: "5px solid #607b54",
-                      textAlign: "left",
-                      cursor: "pointer",
-                    }}
-                  >
-                    <div style={eyebrowStyle}>
-                      {eventAudienceLabel(event)}
-                    </div>
-                    <h3 style={{ margin: "6px 0" }}>{event.title}</h3>
-
-                    <div style={{ color: "#59675f", lineHeight: 1.65 }}>
-                      📅 {eventDateText(event)}
-                      {(event.start_time || event.end_time) && (
-                        <>
-                          <br />
-                          🕐{" "}
-                          {event.start_time
-                            ? normalizeTime(event.start_time)
-                            : ""}
-                          {event.end_time
-                            ? `–${normalizeTime(event.end_time)}`
-                            : ""}
-                        </>
-                      )}
-                      <br />
-                      📍 {event.location}
-                    </div>
-                  </button>
-                ))}
-              </div>
-            )}
-
-            {myParentReservations.length > 0 && (
-              <>
-                <h3 style={{ marginTop: 20 }}>Zbiórki zastępów</h3>
-
-                <div style={{ display: "grid", gap: 9 }}>
-                  {myParentReservations.slice(0, 8).map((item) => (
-                    <div
-                      key={`parent-reservation-${item.id}`}
-                      style={{
-                        ...cardStyle,
-                        borderLeft: "5px solid #607b54",
-                      }}
-                    >
-                      <div style={eyebrowStyle}>
-                        ZBIÓRKA • {item.patrol}
-                      </div>
-
-                      <div
-                        style={{
-                          marginTop: 6,
-                          color: "#59675f",
-                          lineHeight: 1.65,
-                        }}
-                      >
-                        📅 {formatDate(item.date)}
-                        <br />
-                        🕐 {item.time}
-                        {item.endTime ? `–${item.endTime}` : ""}
-                        <br />
-                        📍 {item.location}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </>
             )}
           </>
         )}
