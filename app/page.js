@@ -1699,6 +1699,84 @@ export default function Home() {
     }
   }
 
+  async function adminSetParticipantGoing(eventItem, userId, going) {
+    const admin = await verifyAdminAccess();
+    if (!admin || !eventItem?.id || !userId) return;
+
+    setSignupSavingId(`participant-${userId}`);
+
+    try {
+      if (going) {
+        const { error: assignmentError } = await supabase
+          .from("event_assignments")
+          .upsert(
+            {
+              event_id: eventItem.id,
+              user_id: userId,
+              assignment_type: "participant",
+              assigned_by: session.user.id,
+            },
+            { onConflict: "event_id,user_id" }
+          );
+
+        if (assignmentError) throw assignmentError;
+
+        const { error: signupError } = await supabase
+          .from("event_signups")
+          .upsert(
+            {
+              event_id: eventItem.id,
+              user_id: userId,
+              status: "approved",
+              reviewed_by: session.user.id,
+              reviewed_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: "event_id,user_id" }
+          );
+
+        if (signupError) throw signupError;
+      } else {
+        const { error: assignmentError } = await supabase
+          .from("event_assignments")
+          .delete()
+          .eq("event_id", eventItem.id)
+          .eq("user_id", userId);
+
+        if (assignmentError) throw assignmentError;
+
+        const existingSignup = signupsForEvent(eventItem.id).find(
+          (signup) => signup.user_id === userId
+        );
+
+        if (existingSignup) {
+          const { error: signupError } = await supabase
+            .from("event_signups")
+            .update({
+              status: "rejected",
+              reviewed_by: session.user.id,
+              reviewed_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", existingSignup.id);
+
+          if (signupError) throw signupError;
+        }
+      }
+
+      await loadEvents();
+    } catch (error) {
+      console.error("Błąd zmiany uczestnika:", error);
+      alert(
+        `Nie udało się zmienić statusu uczestnika.\n\n${
+          error?.message || ""
+        }`
+      );
+    } finally {
+      setSignupSavingId(null);
+    }
+  }
+
   function paymentForEventUser(eventId, userId) {
     return eventPayments.find(
       (item) =>
@@ -1829,6 +1907,10 @@ export default function Home() {
 
       if (eventSettingsError) throw eventSettingsError;
 
+      const previousAssignedIds = assignmentsForEvent(
+        assignmentEditorEvent.id
+      ).map((item) => item.user_id);
+
       const { error: deleteError } = await supabase
         .from("event_assignments")
         .delete()
@@ -1851,6 +1933,43 @@ export default function Home() {
           .insert(rows);
 
         if (insertError) throw insertError;
+
+        const approvedRows = rows.map((row) => ({
+          event_id: assignmentEditorEvent.id,
+          user_id: row.user_id,
+          status: "approved",
+          reviewed_by: session.user.id,
+          reviewed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }));
+
+        const { error: signupSyncError } = await supabase
+          .from("event_signups")
+          .upsert(approvedRows, {
+            onConflict: "event_id,user_id",
+          });
+
+        if (signupSyncError) throw signupSyncError;
+      }
+
+      const selectedIds = new Set(rows.map((row) => row.user_id));
+      const removedIds = previousAssignedIds.filter(
+        (userId) => !selectedIds.has(userId)
+      );
+
+      if (removedIds.length) {
+        const { error: removedSignupError } = await supabase
+          .from("event_signups")
+          .update({
+            status: "rejected",
+            reviewed_by: session.user.id,
+            reviewed_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          })
+          .eq("event_id", assignmentEditorEvent.id)
+          .in("user_id", removedIds);
+
+        if (removedSignupError) throw removedSignupError;
       }
 
       setAssignmentEditorEvent(null);
@@ -8441,8 +8560,9 @@ export default function Home() {
               lineHeight: 1.55,
             }}
           >
-            Zaznacz osoby jadące i określ, czy jadą jako uczestnicy,
-            reprezentacja drużyny czy kadra.
+            Tu możesz ręcznie dodać lub usunąć harcerza z wyjazdu.
+            Zaznaczone osoby mają status „jedzie”. Możesz też określić,
+            czy jadą jako uczestnicy, reprezentacja drużyny czy kadra.
           </p>
 
           <div
@@ -8997,6 +9117,22 @@ export default function Home() {
                   </>
                 )}
 
+                {isAdmin && (
+                  <button
+                    style={{
+                      ...primaryStyle,
+                      width: "100%",
+                      marginBottom: 12,
+                    }}
+                    onClick={() => {
+                      setEventDetails(null);
+                      openAssignmentEditor(eventDetails);
+                    }}
+                  >
+                    + Dodaj / edytuj uczestników ręcznie
+                  </button>
+                )}
+
                 <div
                   style={{
                     marginTop: 14,
@@ -9028,15 +9164,50 @@ export default function Home() {
                         }}
                       >
                         <strong>{item.personName}</strong>
-                        <span
+
+                        <div
                           style={{
-                            color: "#315d3e",
-                            fontSize: 11,
-                            fontWeight: 900,
+                            display: "flex",
+                            gap: 6,
+                            alignItems: "center",
+                            flexWrap: "wrap",
                           }}
                         >
-                          JEDZIE
-                        </span>
+                          <span
+                            style={{
+                              color: "#315d3e",
+                              fontSize: 11,
+                              fontWeight: 900,
+                            }}
+                          >
+                            JEDZIE
+                          </span>
+
+                          {isAdmin && (
+                            <button
+                              style={{
+                                ...secondaryStyle,
+                                color: "#8b2635",
+                                borderColor: "#dfc1c5",
+                                padding: "6px 8px",
+                                fontSize: 11,
+                              }}
+                              disabled={
+                                signupSavingId ===
+                                `participant-${item.user_id}`
+                              }
+                              onClick={() =>
+                                adminSetParticipantGoing(
+                                  eventDetails,
+                                  item.user_id,
+                                  false
+                                )
+                              }
+                            >
+                              Nie jedzie
+                            </button>
+                          )}
+                        </div>
                       </div>
                     ))
                   )}
@@ -9090,6 +9261,27 @@ export default function Home() {
                               {signup.paid
                                 ? "✓ Opłacone"
                                 : "Nieopłacone"}
+                            </button>
+                          )}
+
+                          {isAdmin && (
+                            <button
+                              style={{
+                                ...secondaryStyle,
+                                color: "#8b2635",
+                                borderColor: "#dfc1c5",
+                                padding: "6px 8px",
+                                fontSize: 11,
+                              }}
+                              disabled={
+                                signupSavingId ===
+                                `parent-${signup.id}`
+                              }
+                              onClick={() =>
+                                rejectParentEventSignup(signup)
+                              }
+                            >
+                              Nie jedzie
                             </button>
                           )}
                         </div>
@@ -9290,8 +9482,38 @@ export default function Home() {
                             (signup) => signup.status === "rejected"
                           )
                           .map((signup) => (
-                            <div key={`rejected-${signup.id}`}>
-                              {signup.personName}
+                            <div
+                              key={`rejected-${signup.id}`}
+                              style={{
+                                display: "flex",
+                                justifyContent: "space-between",
+                                gap: 8,
+                                alignItems: "center",
+                                padding: "5px 0",
+                              }}
+                            >
+                              <span>{signup.personName}</span>
+
+                              <button
+                                style={{
+                                  ...secondaryStyle,
+                                  padding: "6px 8px",
+                                  fontSize: 11,
+                                }}
+                                disabled={
+                                  signupSavingId ===
+                                  `participant-${signup.user_id}`
+                                }
+                                onClick={() =>
+                                  adminSetParticipantGoing(
+                                    eventDetails,
+                                    signup.user_id,
+                                    true
+                                  )
+                                }
+                              >
+                                Przywróć — jedzie
+                              </button>
                             </div>
                           ))}
                       </div>
@@ -9647,7 +9869,7 @@ export default function Home() {
                   openAssignmentEditor(eventDetails);
                 }}
               >
-                Wyznacz skład
+                Edytuj uczestników
               </button>
             )}
 
