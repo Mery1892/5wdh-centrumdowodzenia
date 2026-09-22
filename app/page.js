@@ -10220,6 +10220,14 @@ function ParentApp({
   const [parentEventAnnouncements, setParentEventAnnouncements] = useState([]);
   const [parentEventLoading, setParentEventLoading] = useState(false);
   const [selectedChildId, setSelectedChildId] = useState("");
+  const [parentCalendarYear, setParentCalendarYear] = useState(
+    new Date().getFullYear()
+  );
+  const [parentCalendarMonth, setParentCalendarMonth] = useState(
+    new Date().getMonth()
+  );
+  const [parentCalendarSelectedDate, setParentCalendarSelectedDate] =
+    useState(dateToString(new Date()));
 
   const today = dateToString(new Date());
 
@@ -10607,6 +10615,88 @@ function ParentApp({
       )
     );
 
+  const parentCalendarDays = getCalendarDays(
+    parentCalendarYear,
+    parentCalendarMonth
+  );
+
+  const parentCalendarMonthName = new Intl.DateTimeFormat("pl-PL", {
+    month: "long",
+    year: "numeric",
+  }).format(new Date(parentCalendarYear, parentCalendarMonth, 1));
+
+  function changeParentCalendarMonth(direction) {
+    const next = new Date(
+      parentCalendarYear,
+      parentCalendarMonth + direction,
+      1
+    );
+
+    setParentCalendarYear(next.getFullYear());
+    setParentCalendarMonth(next.getMonth());
+  }
+
+  function parentCalendarItemsForDate(dateValue) {
+    const dayEvents = relevantEvents
+      .filter((event) => {
+        const endDate = event.end_date || event.event_date;
+        return (
+          dateValue >= event.event_date &&
+          dateValue <= endDate
+        );
+      })
+      .map((event) => ({
+        type: "event",
+        id: `event-${event.id}`,
+        title: event.title,
+        subtitle: eventAudienceLabel(event),
+        location: event.location,
+        time: event.start_time
+          ? normalizeTime(event.start_time)
+          : "",
+        data: event,
+      }));
+
+    const dayReservations = myParentReservations
+      .filter((item) => item.date === dateValue)
+      .map((item) => ({
+        type: "reservation",
+        id: `reservation-${item.id}`,
+        title: `Zbiórka • ${item.patrol}`,
+        subtitle: "ZASTĘP",
+        location: item.location,
+        time: item.time || "",
+        data: item,
+      }));
+
+    const dayChildEntries = linkedChildrenEventEntries
+      .filter(({ event }) => {
+        const endDate = event.end_date || event.event_date;
+        return (
+          dateValue >= event.event_date &&
+          dateValue <= endDate
+        );
+      })
+      .map(({ child, event, signup, paid }) => ({
+        type: "child",
+        id: `child-${child.id}-${event.id}`,
+        title: event.title,
+        subtitle: child.full_name || child.name || "Dziecko",
+        location: event.location,
+        time: event.start_time
+          ? normalizeTime(event.start_time)
+          : "",
+        data: event,
+        signup,
+        paid,
+      }));
+
+    return [...dayChildEntries, ...dayEvents, ...dayReservations];
+  }
+
+  const parentCalendarSelectedItems =
+    parentCalendarItemsForDate(parentCalendarSelectedDate);
+
   const nextImportantAnnouncement =
     myParentAnnouncements.find((item) => item.pinned) ||
     myParentAnnouncements.find((item) => item.important) ||
@@ -10672,6 +10762,265 @@ function ParentApp({
                 {myParentPatrolNames.length
                   ? myParentPatrolNames.join(", ")
                   : "Brak przypisanego zastępu. W kalendarzu nadal zobaczysz wydarzenia drużyny."}
+              </div>
+            </div>
+
+            <div style={{ marginTop: 16, marginBottom: 18 }}>
+              <div style={eyebrowStyle}>KALENDARZ</div>
+
+              <div
+                style={{
+                  ...cardStyle,
+                  marginTop: 8,
+                  padding: 14,
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    marginBottom: 12,
+                  }}
+                >
+                  <button
+                    style={secondaryStyle}
+                    onClick={() => changeParentCalendarMonth(-1)}
+                  >
+                    ←
+                  </button>
+
+                  <strong
+                    style={{
+                      textTransform: "capitalize",
+                      fontSize: 16,
+                    }}
+                  >
+                    {parentCalendarMonthName}
+                  </strong>
+
+                  <button
+                    style={secondaryStyle}
+                    onClick={() => changeParentCalendarMonth(1)}
+                  >
+                    →
+                  </button>
+                </div>
+
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(7,1fr)",
+                    textAlign: "center",
+                  }}
+                >
+                  {["Pon", "Wt", "Śr", "Czw", "Pt", "Sob", "Nd"].map(
+                    (day) => (
+                      <div
+                        key={`parent-calendar-head-${day}`}
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 800,
+                          color: "#78827c",
+                          padding: 4,
+                        }}
+                      >
+                        {day}
+                      </div>
+                    )
+                  )}
+
+                  {parentCalendarDays.map((date, index) => {
+                    if (!date) {
+                      return (
+                        <div
+                          key={`parent-empty-${index}`}
+                          style={{ minHeight: 48 }}
+                        />
+                      );
+                    }
+
+                    const value = dateToString(date);
+                    const selected =
+                      value === parentCalendarSelectedDate;
+                    const items = parentCalendarItemsForDate(value);
+
+                    const hasChild = items.some(
+                      (item) => item.type === "child"
+                    );
+                    const hasEvent = items.some(
+                      (item) => item.type === "event"
+                    );
+                    const hasReservation = items.some(
+                      (item) => item.type === "reservation"
+                    );
+
+                    return (
+                      <button
+                        key={`parent-cal-${value}`}
+                        onClick={() =>
+                          setParentCalendarSelectedDate(value)
+                        }
+                        style={{
+                          border: 0,
+                          background: selected
+                            ? "#173b2b"
+                            : "transparent",
+                          color: selected ? "white" : "#17231c",
+                          borderRadius: 12,
+                          minHeight: 48,
+                          cursor: "pointer",
+                          fontWeight: selected ? 900 : 600,
+                        }}
+                      >
+                        {date.getDate()}
+
+                        <div
+                          style={{
+                            height: 7,
+                            display: "flex",
+                            gap: 3,
+                            justifyContent: "center",
+                            marginTop: 3,
+                          }}
+                        >
+                          {hasChild && (
+                            <Dot
+                              color={
+                                selected ? "#f1a5ae" : "#9d293b"
+                              }
+                            />
+                          )}
+
+                          {hasEvent && (
+                            <Dot
+                              color={
+                                selected ? "#bcd3b2" : "#607b54"
+                              }
+                            />
+                          )}
+
+                          {hasReservation && (
+                            <Dot
+                              color={
+                                selected ? "#f3d899" : "#b98a2f"
+                              }
+                            />
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div
+                  style={{
+                    borderTop: "1px solid #edf0ed",
+                    marginTop: 12,
+                    paddingTop: 10,
+                    display: "flex",
+                    gap: 12,
+                    fontSize: 10,
+                    color: "#68736d",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <LegendDot color="#9d293b" label="Moje dziecko" />
+                  <LegendDot color="#607b54" label="Wydarzenie" />
+                  <LegendDot color="#b98a2f" label="Zbiórka zastępu" />
+                </div>
+
+                <div
+                  style={{
+                    marginTop: 12,
+                    borderTop: "1px solid #edf0ed",
+                    paddingTop: 10,
+                  }}
+                >
+                  <strong>
+                    {formatDate(parentCalendarSelectedDate)}
+                  </strong>
+
+                  {parentCalendarSelectedItems.length === 0 ? (
+                    <div
+                      style={{
+                        marginTop: 7,
+                        color: "#78827c",
+                        fontSize: 12,
+                      }}
+                    >
+                      Brak zaplanowanych rzeczy.
+                    </div>
+                  ) : (
+                    <div
+                      style={{
+                        display: "grid",
+                        gap: 7,
+                        marginTop: 8,
+                      }}
+                    >
+                      {parentCalendarSelectedItems.map((item) => (
+                        <button
+                          key={item.id}
+                          onClick={() => {
+                            if (
+                              item.type === "event" ||
+                              item.type === "child"
+                            ) {
+                              openParentEvent(item.data);
+                            }
+                          }}
+                          style={{
+                            border: "1px solid #e7e3d8",
+                            background: "white",
+                            borderRadius: 11,
+                            padding: 9,
+                            textAlign: "left",
+                            cursor:
+                              item.type === "reservation"
+                                ? "default"
+                                : "pointer",
+                          }}
+                        >
+                          <div
+                            style={{
+                              fontSize: 10,
+                              fontWeight: 900,
+                              color:
+                                item.type === "child"
+                                  ? "#8b2635"
+                                  : item.type === "reservation"
+                                  ? "#8a681f"
+                                  : "#315d3e",
+                            }}
+                          >
+                            {item.subtitle}
+                          </div>
+
+                          <strong
+                            style={{
+                              display: "block",
+                              marginTop: 2,
+                            }}
+                          >
+                            {item.title}
+                          </strong>
+
+                          <div
+                            style={{
+                              marginTop: 3,
+                              color: "#69746d",
+                              fontSize: 11,
+                            }}
+                          >
+                            {item.time ? `${item.time} • ` : ""}
+                            {item.location}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -10908,100 +11257,6 @@ function ParentApp({
           </>
         )}
 
-        {tab === "Kalendarz" && (
-          <>
-            <div style={eyebrowStyle}>Terminy drużyny</div>
-            <h2 style={{ marginTop: 5 }}>Kalendarz</h2>
-
-            <div
-              style={{
-                ...cardStyle,
-                background: "#f7f5ee",
-                boxShadow: "none",
-                marginBottom: 12,
-                color: "#657169",
-                lineHeight: 1.55,
-              }}
-            >
-              Tu są wszystkie wydarzenia drużyny. Zbiórki z Grafiku
-              pokazujemy dla zastępów przypisanych do Twojego konta.
-            </div>
-
-            <div style={{ display: "grid", gap: 9 }}>
-              {allUpcomingEvents.map((event) => (
-                <button
-                  key={`parent-calendar-${event.id}`}
-                  onClick={() => openParentEvent(event)}
-                  style={{
-                    ...cardStyle,
-                    border: 0,
-                    textAlign: "left",
-                    cursor: "pointer",
-                  }}
-                >
-                  <div style={eyebrowStyle}>
-                    {eventAudienceLabel(event)}
-                  </div>
-                  <strong>{event.title}</strong>
-
-                  <div
-                    style={{
-                      marginTop: 5,
-                      color: "#627068",
-                      lineHeight: 1.55,
-                    }}
-                  >
-                    📅 {eventDateText(event)}
-                    {(event.start_time || event.end_time) && (
-                      <>
-                        <br />
-                        🕐{" "}
-                        {event.start_time
-                          ? normalizeTime(event.start_time)
-                          : ""}
-                        {event.end_time
-                          ? `–${normalizeTime(event.end_time)}`
-                          : ""}
-                      </>
-                    )}
-                    <br />
-                    📍 {event.location}
-                  </div>
-                </button>
-              ))}
-
-              {myParentReservations.map((item) => (
-                <div
-                  key={`parent-calendar-res-${item.id}`}
-                  style={{
-                    ...cardStyle,
-                    borderLeft: "5px solid #607b54",
-                  }}
-                >
-                  <div style={eyebrowStyle}>
-                    ZBIÓRKA • {item.patrol}
-                  </div>
-
-                  <div
-                    style={{
-                      marginTop: 6,
-                      color: "#59675f",
-                      lineHeight: 1.65,
-                    }}
-                  >
-                    📅 {formatDate(item.date)}
-                    <br />
-                    🕐 {item.time}
-                    {item.endTime ? `–${item.endTime}` : ""}
-                    <br />
-                    📍 {item.location}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-
         {tab === "Wyjazdy" && (
           <>
             <div style={eyebrowStyle}>Biwaki, rajdy i wyjazdy</div>
@@ -11109,55 +11364,6 @@ function ParentApp({
                     </div>
                   );
                 })}
-              </div>
-            )}
-          </>
-        )}
-
-        {tab === "Ogłoszenia" && (
-          <>
-            <div style={eyebrowStyle}>Komunikaty</div>
-            <h2 style={{ marginTop: 5 }}>Ogłoszenia</h2>
-
-            {myParentAnnouncements.length === 0 ? (
-              <div style={{ ...cardStyle, color: "#68736d" }}>
-                Brak aktualnych ogłoszeń.
-              </div>
-            ) : (
-              <div style={{ display: "grid", gap: 10 }}>
-                {myParentAnnouncements.map((item) => (
-                  <div
-                    key={`parent-announcement-${item.id}`}
-                    style={{
-                      ...cardStyle,
-                      borderLeft: item.important
-                        ? "5px solid #8b2635"
-                        : item.parents_only
-                        ? "5px solid #b98a2f"
-                        : "5px solid #607b54",
-                    }}
-                  >
-                    <div style={eyebrowStyle}>
-                      {item.parents_only
-                        ? "DLA RODZICÓW"
-                        : item.patrol_id
-                        ? "ZASTĘP"
-                        : "DRUŻYNA"}
-                    </div>
-
-                    <h3 style={{ margin: "6px 0" }}>{item.title}</h3>
-
-                    <div
-                      style={{
-                        color: "#5d6962",
-                        lineHeight: 1.55,
-                        whiteSpace: "pre-wrap",
-                      }}
-                    >
-                      {item.body}
-                    </div>
-                  </div>
-                ))}
               </div>
             )}
           </>
@@ -11373,10 +11579,57 @@ function ParentApp({
           </>
         )}
 
-        {tab === "Dokumenty" && (
+
+        {tab === "Informacje" && (
           <>
-            <div style={eyebrowStyle}>Zgody i pliki</div>
-            <h2 style={{ marginTop: 5 }}>Dokumenty</h2>
+            <div style={eyebrowStyle}>DLA RODZICÓW</div>
+            <h2 style={{ marginTop: 5 }}>Informacje</h2>
+
+            <h3 style={{ marginTop: 18 }}>📣 Ogłoszenia</h3>
+
+            {myParentAnnouncements.length === 0 ? (
+              <div style={{ ...cardStyle, color: "#68736d" }}>
+                Brak aktualnych ogłoszeń.
+              </div>
+            ) : (
+              <div style={{ display: "grid", gap: 10 }}>
+                {myParentAnnouncements.map((item) => (
+                  <div
+                    key={`parent-info-announcement-${item.id}`}
+                    style={{
+                      ...cardStyle,
+                      borderLeft: item.important
+                        ? "5px solid #8b2635"
+                        : item.parents_only
+                        ? "5px solid #b98a2f"
+                        : "5px solid #607b54",
+                    }}
+                  >
+                    <div style={eyebrowStyle}>
+                      {item.parents_only
+                        ? "DLA RODZICÓW"
+                        : item.patrol_id
+                        ? "ZASTĘP"
+                        : "DRUŻYNA"}
+                    </div>
+
+                    <h3 style={{ margin: "6px 0" }}>{item.title}</h3>
+
+                    <div
+                      style={{
+                        color: "#5d6962",
+                        lineHeight: 1.55,
+                        whiteSpace: "pre-wrap",
+                      }}
+                    >
+                      {item.body}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <h3 style={{ marginTop: 24 }}>📄 Dokumenty</h3>
 
             {documents.length === 0 ? (
               <div style={{ ...cardStyle, color: "#68736d" }}>
@@ -11386,7 +11639,7 @@ function ParentApp({
               <div style={{ display: "grid", gap: 10 }}>
                 {documents.map((item) => (
                   <div
-                    key={`parent-doc-${item.id}`}
+                    key={`parent-info-doc-${item.id}`}
                     style={cardStyle}
                   >
                     <strong>{item.title}</strong>
@@ -11417,7 +11670,7 @@ function ParentApp({
       </section>
 
       <BottomNav
-        tabs={["Moje", "Kalendarz", "Wyjazdy", "Dziecko", "Ogłoszenia", "Dokumenty"]}
+        tabs={["Moje", "Wyjazdy", "Dziecko", "Informacje"]}
         activeTab={tab}
         setActiveTab={setTab}
       />
