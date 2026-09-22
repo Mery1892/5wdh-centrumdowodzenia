@@ -358,6 +358,8 @@ export default function Home() {
   const [membershipDues, setMembershipDues] = useState([]);
   const [duesSaving, setDuesSaving] = useState(false);
   const [parentChildren, setParentChildren] = useState([]);
+  const [parentPatrols, setParentPatrols] = useState([]);
+  const [parentChildRequests, setParentChildRequests] = useState([]);
   const [documents, setDocuments] = useState([]);
   const [documentAdminFilter, setDocumentAdminFilter] = useState("all");
   const [documentSearch, setDocumentSearch] = useState("");
@@ -478,6 +480,8 @@ export default function Home() {
       loadNotifications();
       loadMembershipDues();
       loadParentChildren();
+      loadParentPatrols();
+      loadParentChildRequests();
       loadDocuments();
       checkPushStatus();
 
@@ -1925,6 +1929,38 @@ export default function Home() {
     setParentChildren(data || []);
   }
 
+  async function loadParentPatrols() {
+    if (!session?.user) return;
+
+    const { data, error } = await supabase
+      .from("parent_patrols")
+      .select("id,parent_id,patrol_id,created_at")
+      .order("created_at");
+
+    if (error) {
+      console.error("Błąd pobierania powiązań rodzic-zastęp:", error);
+      return;
+    }
+
+    setParentPatrols(data || []);
+  }
+
+  async function loadParentChildRequests() {
+    if (!session?.user) return;
+
+    const { data, error } = await supabase
+      .from("parent_child_requests")
+      .select("id,parent_id,child_name,status,created_at")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("Błąd pobierania zgłoszeń dzieci:", error);
+      return;
+    }
+
+    setParentChildRequests(data || []);
+  }
+
   async function loadDocuments() {
     if (!session?.user) return;
 
@@ -2629,6 +2665,9 @@ export default function Home() {
       childIds: parentChildren
         .filter((link) => link.parent_id === profile.id)
         .map((link) => link.child_id),
+      parentPatrolIds: parentPatrols
+        .filter((link) => link.parent_id === profile.id)
+        .map((link) => String(link.patrol_id)),
     });
   }
 
@@ -2705,6 +2744,38 @@ export default function Home() {
         if (leaderError) throw leaderError;
       }
 
+      if (userEditor.role === "parent") {
+        const { error: parentDuesError } = await supabase
+          .from("membership_dues")
+          .delete()
+          .eq("user_id", userEditor.id);
+
+        if (parentDuesError) throw parentDuesError;
+      }
+
+      const { error: clearParentPatrolsError } = await supabase
+        .from("parent_patrols")
+        .delete()
+        .eq("parent_id", userEditor.id);
+
+      if (clearParentPatrolsError) throw clearParentPatrolsError;
+
+      if (
+        userEditor.role === "parent" &&
+        userEditor.parentPatrolIds?.length
+      ) {
+        const { error: parentPatrolInsertError } = await supabase
+          .from("parent_patrols")
+          .insert(
+            userEditor.parentPatrolIds.map((patrolId) => ({
+              parent_id: userEditor.id,
+              patrol_id: Number(patrolId),
+            }))
+          );
+
+        if (parentPatrolInsertError) throw parentPatrolInsertError;
+      }
+
       const { error: clearChildrenError } = await supabase
         .from("parent_children")
         .delete()
@@ -2735,6 +2806,8 @@ export default function Home() {
         loadSchedule(),
         loadMembershipDues(),
         loadParentChildren(),
+        loadParentPatrols(),
+        loadParentChildRequests(),
         userEditor.id === session.user.id
           ? loadRole(session.user.id)
           : Promise.resolve(),
@@ -3063,6 +3136,8 @@ export default function Home() {
     setNotifications([]);
     setMembershipDues([]);
     setParentChildren([]);
+    setParentPatrols([]);
+    setParentChildRequests([]);
     setDocuments([]);
     setDocumentAdminFilter("all");
     setDocumentSearch("");
@@ -3533,6 +3608,9 @@ export default function Home() {
         patrols={patrols}
         memberships={memberships}
         parentChildren={parentChildren}
+        parentPatrols={parentPatrols}
+        parentChildRequests={parentChildRequests}
+        loadParentChildRequests={loadParentChildRequests}
         membershipDues={membershipDues}
         announcements={announcements}
         documents={documents}
@@ -6962,6 +7040,64 @@ export default function Home() {
                   background: "#f7f5ee",
                 }}
               >
+                <strong>Zastępy rodzica</strong>
+
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: "#6c756f",
+                    marginTop: 4,
+                    marginBottom: 10,
+                  }}
+                >
+                  W zakładce „Moje” rodzic zobaczy zbiórki i wydarzenia
+                  całej drużyny oraz zaznaczonych zastępów.
+                </div>
+
+                <div style={{ display: "grid", gap: 8, marginBottom: 16 }}>
+                  {patrols.map((patrol) => {
+                    const checked =
+                      userEditor.parentPatrolIds?.includes(
+                        String(patrol.id)
+                      ) || false;
+
+                    return (
+                      <label
+                        key={`parent-patrol-${patrol.id}`}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 9,
+                          cursor: "pointer",
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(event) => {
+                            const patrolId = String(patrol.id);
+                            const next = event.target.checked
+                              ? [
+                                  ...(userEditor.parentPatrolIds || []),
+                                  patrolId,
+                                ]
+                              : (userEditor.parentPatrolIds || []).filter(
+                                  (id) => id !== patrolId
+                                );
+
+                            setUserEditor({
+                              ...userEditor,
+                              parentPatrolIds: next,
+                            });
+                          }}
+                        />
+
+                        <span>{patrol.name}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+
                 <strong>Przypisane dzieci</strong>
 
                 <div
@@ -6972,7 +7108,7 @@ export default function Home() {
                     marginBottom: 10,
                   }}
                 >
-                  Rodzic zobaczy informacje dotyczące zaznaczonych osób.
+                  Jeśli dziecko ma już konto, możesz je tu przypisać.
                 </div>
 
                 <div style={{ display: "grid", gap: 8 }}>
@@ -9654,6 +9790,9 @@ function ParentApp({
   patrols = [],
   memberships = [],
   parentChildren = [],
+  parentPatrols = [],
+  parentChildRequests = [],
+  loadParentChildRequests,
   membershipDues = [],
   announcements = [],
   documents = [],
@@ -9666,6 +9805,8 @@ function ParentApp({
 }) {
   const [tab, setTab] = useState("Moje");
   const [selectedChildId, setSelectedChildId] = useState("");
+  const [childRequestName, setChildRequestName] = useState("");
+  const [childRequestSaving, setChildRequestSaving] = useState(false);
   const today = dateToString(new Date());
 
   const childIds = parentChildren
@@ -9674,6 +9815,20 @@ function ParentApp({
 
   const children = people.filter((person) =>
     childIds.includes(person.id)
+  );
+
+  const myParentPatrolIds = parentPatrols
+    .filter((link) => link.parent_id === currentUserId)
+    .map((link) => Number(link.patrol_id));
+
+  const myParentPatrolNames = patrols
+    .filter((patrol) =>
+      myParentPatrolIds.includes(Number(patrol.id))
+    )
+    .map((patrol) => patrol.name);
+
+  const myChildRequests = parentChildRequests.filter(
+    (item) => item.parent_id === currentUserId
   );
 
   useEffect(() => {
@@ -9703,6 +9858,36 @@ function ParentApp({
       Number(patrol.id) === Number(childMembership?.patrol_id)
   );
 
+  const allUpcomingEvents = events
+    .filter((event) => event.event_date >= today)
+    .sort((a, b) =>
+      `${a.event_date}T${normalizeTime(a.start_time)}`.localeCompare(
+        `${b.event_date}T${normalizeTime(b.start_time)}`
+      )
+    );
+
+  const myParentEvents = allUpcomingEvents.filter((event) => {
+    if (event.whole_troop) return true;
+
+    if (
+      event.patrol_id &&
+      myParentPatrolIds.includes(Number(event.patrol_id))
+    ) {
+      return true;
+    }
+
+    return false;
+  });
+
+  const myParentAnnouncements = announcements.filter((item) => {
+    if (item.whole_troop) return true;
+
+    return (
+      item.patrol_id &&
+      myParentPatrolIds.includes(Number(item.patrol_id))
+    );
+  });
+
   const childAssignments = child
     ? eventAssignments.filter(
         (assignment) => assignment.user_id === child.id
@@ -9715,39 +9900,11 @@ function ParentApp({
     )
   );
 
-  const childEvents = child
-    ? events
-        .filter((event) => {
-          if (event.event_date < today) return false;
-
-          if (event.whole_troop) return true;
-
-          if (
-            childPatrol &&
-            Number(event.patrol_id) === Number(childPatrol.id)
-          ) {
-            return true;
-          }
-
-          return assignedEventIds.has(Number(event.id));
-        })
-        .sort((a, b) =>
-          `${a.event_date}T${normalizeTime(a.start_time)}`.localeCompare(
-            `${b.event_date}T${normalizeTime(b.start_time)}`
-          )
-        )
-    : [];
-
-  const childTrips = childEvents.filter((event) =>
-    isTripType(event.event_type)
-  );
-
-  const childAnnouncements = child
-    ? announcements.filter(
-        (item) =>
-          item.whole_troop ||
-          (childPatrol &&
-            Number(item.patrol_id) === Number(childPatrol.id))
+  const childTrips = child
+    ? allUpcomingEvents.filter(
+        (event) =>
+          isTripType(event.event_type) &&
+          assignedEventIds.has(Number(event.id))
       )
     : [];
 
@@ -9762,93 +9919,94 @@ function ParentApp({
     );
   }
 
-  function childIsAssigned(eventId) {
-    return assignedEventIds.has(Number(eventId));
+  async function submitChildRequest() {
+    const cleanName = childRequestName.trim();
+
+    if (cleanName.length < 3) {
+      alert("Wpisz imię i nazwisko dziecka.");
+      return;
+    }
+
+    setChildRequestSaving(true);
+
+    try {
+      const { error } = await supabase
+        .from("parent_child_requests")
+        .insert({
+          parent_id: currentUserId,
+          child_name: cleanName,
+          status: "pending",
+        });
+
+      if (error) throw error;
+
+      setChildRequestName("");
+
+      if (loadParentChildRequests) {
+        await loadParentChildRequests();
+      }
+
+      alert("Dziecko zostało zgłoszone.");
+    } catch (error) {
+      console.error("Błąd zgłoszenia dziecka:", error);
+      alert(
+        `Nie udało się zgłosić dziecka.\n\n${error?.message || ""}`
+      );
+    } finally {
+      setChildRequestSaving(false);
+    }
   }
 
-  if (children.length === 0) {
-    return (
-      <main style={appStyle}>
-        <AppHeader
-          subtitle="Strefa rodzica"
-          logout={logout}
-        />
+  function eventAudienceLabel(event) {
+    if (event.whole_troop) return "CAŁA DRUŻYNA";
 
-        <section style={containerPadding}>
-          <div style={eyebrowStyle}>Panel rodzica</div>
-          <h2 style={{ marginTop: 5 }}>
-            Brak przypisanego dziecka
-          </h2>
-
-          <div style={cardStyle}>
-            Administrator musi najpierw przypisać Twoje konto rodzica
-            do harcerza w panelu użytkowników.
-          </div>
-        </section>
-      </main>
+    const patrol = patrols.find(
+      (item) => Number(item.id) === Number(event.patrol_id)
     );
+
+    return patrol?.name?.toUpperCase() || "WYDARZENIE";
+  }
+
+  function eventDateText(event) {
+    return event.end_date
+      ? `${formatDate(event.event_date)} – ${formatDate(event.end_date)}`
+      : formatDate(event.event_date);
   }
 
   return (
     <main style={appStyle}>
-      <AppHeader
-        subtitle="Strefa rodzica"
-        logout={logout}
-      />
+      <AppHeader subtitle="Strefa rodzica" logout={logout} />
 
       <section style={containerPadding}>
-        <label
-          style={{
-            display: "block",
-            marginBottom: 16,
-          }}
-        >
-          <strong>Moje dziecko</strong>
-
-          <select
-            value={child?.id || ""}
-            onChange={(event) =>
-              setSelectedChildId(event.target.value)
-            }
-            style={inputStyle}
-          >
-            {children.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.full_name || item.name || "Harcerz"}
-              </option>
-            ))}
-          </select>
-        </label>
-
         {tab === "Moje" && (
           <>
-            <div style={eyebrowStyle}>
-              Najważniejsze informacje
-            </div>
-
-            <h2 style={{ marginTop: 5 }}>
-              {child?.full_name || child?.name}
-            </h2>
+            <div style={eyebrowStyle}>Panel rodzica</div>
+            <h2 style={{ marginTop: 5 }}>Najbliższe terminy</h2>
 
             <div
               style={{
                 ...cardStyle,
                 marginBottom: 14,
+                background: "#f7f5ee",
+                boxShadow: "none",
               }}
             >
-              <div style={{ lineHeight: 1.8 }}>
-                <strong>Zastęp:</strong>{" "}
-                {childPatrol?.name || "brak przypisania"}
-                <br />
-                <strong>Funkcja:</strong>{" "}
-                {child?.function_title || "—"}
-                <br />
-                <strong>Numer ewidencji:</strong>{" "}
-                {child?.membership_number || "—"}
+              <strong>Co widzisz tutaj?</strong>
+              <div
+                style={{
+                  marginTop: 6,
+                  color: "#657169",
+                  lineHeight: 1.55,
+                }}
+              >
+                Zbiórki i wydarzenia całej drużyny
+                {myParentPatrolNames.length
+                  ? ` oraz zastępów: ${myParentPatrolNames.join(", ")}.`
+                  : ". Nie masz jeszcze przypisanego zastępu, więc w kalendarzu znajdziesz wszystkie wydarzenia."}
               </div>
             </div>
 
-            {pushStatus !== "enabled" && (
+            {pushStatus !== "enabled" ? (
               <div
                 style={{
                   ...cardStyle,
@@ -9859,16 +10017,9 @@ function ParentApp({
                 }}
               >
                 <strong>🔔 Włącz powiadomienia</strong>
-                <p
-                  style={{
-                    color: "#68736d",
-                    lineHeight: 1.5,
-                  }}
-                >
-                  Dostaniesz informacje o zmianach, wyjazdach
-                  i ważnych komunikatach.
+                <p style={{ color: "#68736d", lineHeight: 1.5 }}>
+                  Dostaniesz informacje o zmianach i ważnych terminach.
                 </p>
-
                 <button
                   style={primaryStyle}
                   disabled={pushBusy}
@@ -9877,9 +10028,7 @@ function ParentApp({
                   {pushBusy ? "Włączam..." : "Włącz powiadomienia"}
                 </button>
               </div>
-            )}
-
-            {pushStatus === "enabled" && (
+            ) : (
               <div
                 style={{
                   ...cardStyle,
@@ -9903,112 +10052,52 @@ function ParentApp({
               </div>
             )}
 
-            <h3>Najbliższe wydarzenia</h3>
-
-            {childEvents.slice(0, 4).length === 0 ? (
+            {myParentEvents.length === 0 ? (
               <div style={{ ...cardStyle, color: "#68736d" }}>
-                Brak nadchodzących wydarzeń.
+                Brak nadchodzących wydarzeń dla drużyny lub przypisanego zastępu.
               </div>
             ) : (
               <div style={{ display: "grid", gap: 10 }}>
-                {childEvents.slice(0, 4).map((event) => (
+                {myParentEvents.slice(0, 6).map((event) => (
                   <div
-                    key={`parent-event-${event.id}`}
+                    key={`parent-home-event-${event.id}`}
                     style={{
                       ...cardStyle,
                       borderLeft: "5px solid #607b54",
                     }}
                   >
                     <div style={eyebrowStyle}>
-                      {event.whole_troop
-                        ? "CAŁA DRUŻYNA"
-                        : childPatrol?.name || "WYDARZENIE"}
+                      {eventAudienceLabel(event)}
                     </div>
-
-                    <h3 style={{ margin: "6px 0" }}>
-                      {event.title}
-                    </h3>
+                    <h3 style={{ margin: "6px 0" }}>{event.title}</h3>
 
                     <div style={{ color: "#59675f", lineHeight: 1.65 }}>
-                      📅 {formatDate(event.event_date)}
-                      <br />
-                      🕐 {normalizeTime(event.start_time)}
-                      {event.end_time
-                        ? `–${normalizeTime(event.end_time)}`
-                        : ""}
-                      <br />
-                      📍 {event.location}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <h3 style={{ marginTop: 20 }}>Wyjazdy</h3>
-
-            {childTrips.length === 0 ? (
-              <div style={{ ...cardStyle, color: "#68736d" }}>
-                Brak nadchodzących wyjazdów.
-              </div>
-            ) : (
-              <div style={{ display: "grid", gap: 10 }}>
-                {childTrips.map((event) => (
-                  <div
-                    key={`parent-trip-${event.id}`}
-                    style={{
-                      ...cardStyle,
-                      borderLeft: childIsAssigned(event.id)
-                        ? "5px solid #315d3e"
-                        : "5px solid #d1d6d2",
-                    }}
-                  >
-                    <div style={eyebrowStyle}>
-                      {childIsAssigned(event.id)
-                        ? "✓ TWOJE DZIECKO JEDZIE"
-                        : "WYJAZD DRUŻYNY / ZASTĘPU"}
-                    </div>
-
-                    <h3 style={{ margin: "6px 0" }}>
-                      {event.title}
-                    </h3>
-
-                    <div style={{ color: "#59675f", lineHeight: 1.65 }}>
-                      📅 {formatDate(event.event_date)}
-                      <br />
-                      🕐 {normalizeTime(event.start_time)}
-                      {event.end_time
-                        ? `–${normalizeTime(event.end_time)}`
-                        : ""}
-                      <br />
-                      📍 {event.location}
-
-                      {event.cost && (
+                      📅 {eventDateText(event)}
+                      {(event.start_time || event.end_time) && (
                         <>
                           <br />
-                          💰 {event.cost}
-                          {event.payment_deadline
-                            ? ` • do ${formatDate(event.payment_deadline)}`
+                          🕐{" "}
+                          {event.start_time
+                            ? normalizeTime(event.start_time)
+                            : ""}
+                          {event.end_time
+                            ? `–${normalizeTime(event.end_time)}`
                             : ""}
                         </>
                       )}
-
-                      {event.what_to_bring && (
-                        <>
-                          <br />
-                          🎒 {event.what_to_bring}
-                        </>
-                      )}
+                      <br />
+                      📍 {event.location}
                     </div>
                   </div>
                 ))}
               </div>
             )}
 
-            {childAnnouncements.length > 0 && (
+            {myParentAnnouncements.length > 0 && (
               <>
                 <h3 style={{ marginTop: 20 }}>Ogłoszenia</h3>
                 <div style={{ display: "grid", gap: 10 }}>
-                  {childAnnouncements.slice(0, 5).map((item) => (
+                  {myParentAnnouncements.slice(0, 5).map((item) => (
                     <div
                       key={`parent-ann-${item.id}`}
                       style={{
@@ -10033,26 +10122,73 @@ function ParentApp({
                 </div>
               </>
             )}
+
+            {child && childTrips.length > 0 && (
+              <>
+                <h3 style={{ marginTop: 20 }}>Wyjazdy dziecka</h3>
+                <div style={{ display: "grid", gap: 10 }}>
+                  {childTrips.map((event) => (
+                    <div
+                      key={`parent-child-trip-${event.id}`}
+                      style={{
+                        ...cardStyle,
+                        borderLeft: "5px solid #315d3e",
+                      }}
+                    >
+                      <div style={eyebrowStyle}>✓ DZIECKO NA LIŚCIE</div>
+                      <strong>{event.title}</strong>
+                      <div
+                        style={{
+                          marginTop: 6,
+                          color: "#59675f",
+                          lineHeight: 1.55,
+                        }}
+                      >
+                        {eventDateText(event)} • {event.location}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
           </>
         )}
 
         {tab === "Kalendarz" && (
           <>
-            <div style={eyebrowStyle}>Terminy dziecka</div>
-            <h2 style={{ marginTop: 5 }}>Kalendarz</h2>
+            <div style={eyebrowStyle}>Wszystkie terminy</div>
+            <h2 style={{ marginTop: 5 }}>Kalendarz drużyny</h2>
 
-            {childEvents.length === 0 ? (
+            <div
+              style={{
+                ...cardStyle,
+                background: "#f7f5ee",
+                boxShadow: "none",
+                marginBottom: 12,
+                color: "#657169",
+                lineHeight: 1.55,
+              }}
+            >
+              Tutaj są wszystkie nadchodzące zbiórki i wydarzenia drużyny,
+              nawet jeśli dziecko nie ma jeszcze własnego konta.
+            </div>
+
+            {allUpcomingEvents.length === 0 ? (
               <div style={{ ...cardStyle, color: "#68736d" }}>
                 Brak nadchodzących terminów.
               </div>
             ) : (
               <div style={{ display: "grid", gap: 9 }}>
-                {childEvents.map((event) => (
+                {allUpcomingEvents.map((event) => (
                   <div
-                    key={`calendar-${event.id}`}
+                    key={`parent-calendar-${event.id}`}
                     style={cardStyle}
                   >
+                    <div style={eyebrowStyle}>
+                      {eventAudienceLabel(event)}
+                    </div>
                     <strong>{event.title}</strong>
+
                     <div
                       style={{
                         marginTop: 5,
@@ -10060,9 +10196,21 @@ function ParentApp({
                         lineHeight: 1.55,
                       }}
                     >
-                      {formatDate(event.event_date)} •{" "}
-                      {normalizeTime(event.start_time)} •{" "}
-                      {event.location}
+                      📅 {eventDateText(event)}
+                      {(event.start_time || event.end_time) && (
+                        <>
+                          <br />
+                          🕐{" "}
+                          {event.start_time
+                            ? normalizeTime(event.start_time)
+                            : ""}
+                          {event.end_time
+                            ? `–${normalizeTime(event.end_time)}`
+                            : ""}
+                        </>
+                      )}
+                      <br />
+                      📍 {event.location}
                     </div>
                   </div>
                 ))}
@@ -10071,56 +10219,184 @@ function ParentApp({
           </>
         )}
 
-        {tab === "Składki" && (
+        {tab === "Dziecko" && (
           <>
-            <div style={eyebrowStyle}>Składka członkowska</div>
-            <h2 style={{ marginTop: 5 }}>
-              Rok {new Date().getFullYear()}
-            </h2>
+            <div style={eyebrowStyle}>Dane dziecka</div>
+            <h2 style={{ marginTop: 5 }}>Moje dziecko</h2>
+
+            {children.length > 0 && (
+              <label
+                style={{
+                  display: "block",
+                  marginBottom: 14,
+                }}
+              >
+                <strong>Przypisane konto dziecka</strong>
+                <select
+                  value={child?.id || ""}
+                  onChange={(event) =>
+                    setSelectedChildId(event.target.value)
+                  }
+                  style={inputStyle}
+                >
+                  {children.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.full_name || item.name || "Harcerz"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+
+            {child ? (
+              <>
+                <div
+                  style={{
+                    ...cardStyle,
+                    marginBottom: 14,
+                  }}
+                >
+                  <strong>
+                    {child.full_name || child.name || "Harcerz"}
+                  </strong>
+                  <div style={{ marginTop: 7, lineHeight: 1.7 }}>
+                    Zastęp: {childPatrol?.name || "brak przypisania"}
+                    <br />
+                    Numer ewidencji: {child.membership_number || "—"}
+                  </div>
+                </div>
+
+                <div style={eyebrowStyle}>Składki dziecka</div>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gap: 9,
+                    marginTop: 8,
+                  }}
+                >
+                  {[1, 2, 3, 4].map((quarter) => {
+                    const due = childDue(
+                      new Date().getFullYear(),
+                      quarter
+                    );
+
+                    return (
+                      <div
+                        key={`parent-child-due-${quarter}`}
+                        style={{
+                          ...cardStyle,
+                          boxShadow: "none",
+                          background: due?.paid
+                            ? "#f1f7f2"
+                            : "#fff8f8",
+                          border: due?.paid
+                            ? "1px solid #a9bbaa"
+                            : "1px solid #e1d0d2",
+                        }}
+                      >
+                        <strong>{quarterLabel(quarter)}</strong>
+                        <div
+                          style={{
+                            marginTop: 6,
+                            fontSize: 12,
+                            fontWeight: 900,
+                            color: due?.paid
+                              ? "#315d3e"
+                              : "#8b2635",
+                          }}
+                        >
+                          {due?.paid ? "OPŁACONA" : "NIEOPŁACONA"}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            ) : (
+              <div
+                style={{
+                  ...cardStyle,
+                  color: "#68736d",
+                  marginBottom: 14,
+                }}
+              >
+                Dziecko nie ma jeszcze konta przypisanego do tego rodzica.
+                To nie blokuje kalendarza ani informacji o wydarzeniach.
+              </div>
+            )}
 
             <div
               style={{
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr",
-                gap: 9,
+                ...cardStyle,
+                marginTop: 16,
+                background: "#f7f5ee",
+                boxShadow: "none",
               }}
             >
-              {[1, 2, 3, 4].map((quarter) => {
-                const due = childDue(
-                  new Date().getFullYear(),
-                  quarter
-                );
+              <strong>➕ Zgłoś dziecko</strong>
+              <p
+                style={{
+                  color: "#667169",
+                  lineHeight: 1.5,
+                  marginBottom: 8,
+                }}
+              >
+                Jeśli dziecko nie ma jeszcze konta w aplikacji, wpisz jego
+                imię i nazwisko. Ta opcja jest dostępna tylko dla rodziców.
+              </p>
 
-                return (
-                  <div
-                    key={`parent-due-${quarter}`}
-                    style={{
-                      ...cardStyle,
-                      boxShadow: "none",
-                      background: due?.paid
-                        ? "#f1f7f2"
-                        : "#fff8f8",
-                      border: due?.paid
-                        ? "1px solid #a9bbaa"
-                        : "1px solid #e1d0d2",
-                    }}
-                  >
-                    <strong>{quarterLabel(quarter)}</strong>
+              <input
+                value={childRequestName}
+                onChange={(event) =>
+                  setChildRequestName(event.target.value)
+                }
+                placeholder="Imię i nazwisko dziecka"
+                style={inputStyle}
+              />
+
+              <button
+                style={{
+                  ...primaryStyle,
+                  marginTop: 9,
+                }}
+                disabled={childRequestSaving}
+                onClick={submitChildRequest}
+              >
+                {childRequestSaving
+                  ? "Zgłaszam..."
+                  : "Zgłoś dziecko"}
+              </button>
+
+              {myChildRequests.length > 0 && (
+                <div
+                  style={{
+                    marginTop: 12,
+                    borderTop: "1px solid #dde1dd",
+                    paddingTop: 10,
+                  }}
+                >
+                  <strong style={{ fontSize: 12 }}>
+                    Zgłoszone dzieci
+                  </strong>
+
+                  {myChildRequests.map((item) => (
                     <div
+                      key={`child-request-${item.id}`}
                       style={{
                         marginTop: 6,
                         fontSize: 12,
-                        fontWeight: 900,
-                        color: due?.paid
-                          ? "#315d3e"
-                          : "#8b2635",
+                        color: "#667169",
                       }}
                     >
-                      {due?.paid ? "OPŁACONA" : "NIEOPŁACONA"}
+                      {item.child_name} •{" "}
+                      {item.status === "linked"
+                        ? "przypisane"
+                        : "oczekuje na przypisanie"}
                     </div>
-                  </div>
-                );
-              })}
+                  ))}
+                </div>
+              )}
             </div>
           </>
         )}
@@ -10169,7 +10445,7 @@ function ParentApp({
       </section>
 
       <BottomNav
-        tabs={["Moje", "Kalendarz", "Składki", "Dokumenty"]}
+        tabs={["Moje", "Kalendarz", "Dziecko", "Dokumenty"]}
         activeTab={tab}
         setActiveTab={setTab}
       />
