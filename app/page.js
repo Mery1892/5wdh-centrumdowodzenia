@@ -329,6 +329,7 @@ export default function Home() {
   const [events, setEvents] = useState([]);
   const [eventAssignments, setEventAssignments] = useState([]);
   const [eventSignups, setEventSignups] = useState([]);
+  const [parentEventSignups, setParentEventSignups] = useState([]);
   const [eventAnnouncements, setEventAnnouncements] = useState([]);
   const [eventMessages, setEventMessages] = useState([]);
   const [eventAnnouncementTitle, setEventAnnouncementTitle] = useState("");
@@ -482,6 +483,7 @@ export default function Home() {
       loadParentChildren();
       loadParentPatrols();
       loadParentChildRequests();
+      loadParentEventSignups();
       loadDocuments();
       checkPushStatus();
 
@@ -508,6 +510,27 @@ export default function Home() {
         () => {
           loadEvents();
         }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [session?.user?.id]);
+
+  useEffect(() => {
+    if (!session?.user) return;
+
+    const channel = supabase
+      .channel(`parent-event-signups-${session.user.id}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "parent_event_signups",
+        },
+        () => loadParentEventSignups()
       )
       .subscribe();
 
@@ -1426,6 +1449,85 @@ export default function Home() {
     }
   }
 
+  function parentSignupsForEvent(eventId) {
+    return parentEventSignups.filter(
+      (item) => Number(item.event_id) === Number(eventId)
+    );
+  }
+
+  async function approveParentEventSignup(signup) {
+    const admin = await verifyAdminAccess();
+    if (!admin || !signup?.id) return;
+
+    setSignupSavingId(`parent-${signup.id}`);
+
+    try {
+      const { error } = await supabase
+        .from("parent_event_signups")
+        .update({
+          status: "approved",
+          reviewed_by: session.user.id,
+          reviewed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", signup.id);
+
+      if (error) throw error;
+
+      await loadParentEventSignups();
+    } catch (error) {
+      console.error("Błąd akceptacji zgłoszenia dziecka:", error);
+      alert(
+        `Nie udało się zaakceptować zgłoszenia dziecka.\n\n${
+          error?.message || ""
+        }`
+      );
+    } finally {
+      setSignupSavingId(null);
+    }
+  }
+
+  async function rejectParentEventSignup(signup) {
+    const admin = await verifyAdminAccess();
+    if (!admin || !signup?.id) return;
+
+    const reason =
+      window.prompt(
+        `Powód odrzucenia zgłoszenia: ${signup.child_name}`,
+        ""
+      ) ?? null;
+
+    if (reason === null) return;
+
+    setSignupSavingId(`parent-${signup.id}`);
+
+    try {
+      const { error } = await supabase
+        .from("parent_event_signups")
+        .update({
+          status: "rejected",
+          admin_note: reason.trim() || null,
+          reviewed_by: session.user.id,
+          reviewed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", signup.id);
+
+      if (error) throw error;
+
+      await loadParentEventSignups();
+    } catch (error) {
+      console.error("Błąd odrzucenia zgłoszenia dziecka:", error);
+      alert(
+        `Nie udało się odrzucić zgłoszenia dziecka.\n\n${
+          error?.message || ""
+        }`
+      );
+    } finally {
+      setSignupSavingId(null);
+    }
+  }
+
   async function submitEventSignup(eventItem) {
     if (!session?.user || !eventItem?.id) return;
 
@@ -1962,6 +2064,24 @@ export default function Home() {
     setParentChildRequests(data || []);
   }
 
+  async function loadParentEventSignups() {
+    if (!session?.user) return;
+
+    const { data, error } = await supabase
+      .from("parent_event_signups")
+      .select(
+        "id,event_id,parent_id,child_name,status,admin_note,reviewed_by,reviewed_at,created_at,updated_at"
+      )
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("Błąd pobierania zgłoszeń dzieci na wydarzenia:", error);
+      return;
+    }
+
+    setParentEventSignups(data || []);
+  }
+
   async function loadDocuments() {
     if (!session?.user) return;
 
@@ -2443,6 +2563,15 @@ export default function Home() {
       return targetUserId ? [targetUserId] : [];
     }
 
+    if (audience === "parents") {
+      return people
+        .filter(
+          (person) =>
+            normalizeRole(person.role) === "parent"
+        )
+        .map((person) => person.id);
+    }
+
     if (audience === "staff") {
       return people
         .filter(
@@ -2524,7 +2653,7 @@ export default function Home() {
     const { data, error } = await supabase
       .from("announcements")
       .select(
-        "id,title,body,whole_troop,patrol_id,important,pinned,expires_at,created_by,created_at"
+        "id,title,body,whole_troop,patrol_id,parents_only,important,pinned,expires_at,created_by,created_at"
       )
       .order("pinned", { ascending: false })
       .order("important", { ascending: false })
@@ -2586,6 +2715,7 @@ export default function Home() {
             announcementForm.audience === "patrol"
               ? Number(announcementForm.patrolId)
               : null,
+          parents_only: announcementForm.audience === "parents",
           important: announcementForm.important,
           pinned: announcementForm.pinned,
           expires_at: announcementForm.expiresAt || null,
@@ -3612,6 +3742,8 @@ export default function Home() {
         parentPatrols={parentPatrols}
         parentChildRequests={parentChildRequests}
         loadParentChildRequests={loadParentChildRequests}
+        parentEventSignups={parentEventSignups}
+        loadParentEventSignups={loadParentEventSignups}
         reservations={reservations}
         membershipDues={membershipDues}
         announcements={announcements}
@@ -3703,6 +3835,7 @@ export default function Home() {
     .filter((item) => {
       if (item.expires_at && item.expires_at < today) return false;
       if (isAdmin) return true;
+      if (item.parents_only) return false;
       if (item.whole_troop) return true;
       return myPatrolIds.includes(Number(item.patrol_id));
     });
@@ -6527,6 +6660,7 @@ export default function Home() {
                 style={inputStyle}
               >
                 <option value="whole">Cała drużyna</option>
+                <option value="parents">Rodzice</option>
                 <option value="patrol">Konkretny zastęp</option>
               </select>
             </label>
@@ -8613,7 +8747,11 @@ export default function Home() {
                       fontWeight: 900,
                     }}
                   >
-                    JEDZIE {assignmentsForEvent(eventDetails.id).length}
+                    JEDZIE{" "}
+                    {assignmentsForEvent(eventDetails.id).length +
+                      parentSignupsForEvent(eventDetails.id).filter(
+                        (signup) => signup.status === "approved"
+                      ).length}
                   </span>
 
                   <span
@@ -8629,6 +8767,9 @@ export default function Home() {
                     OCZEKUJE{" "}
                     {
                       signupsForEvent(eventDetails.id).filter(
+                        (signup) => signup.status === "pending"
+                      ).length +
+                      parentSignupsForEvent(eventDetails.id).filter(
                         (signup) => signup.status === "pending"
                       ).length
                     }
@@ -8778,6 +8919,32 @@ export default function Home() {
                       </div>
                     ))
                   )}
+
+                  {parentSignupsForEvent(eventDetails.id)
+                    .filter((signup) => signup.status === "approved")
+                    .map((signup) => (
+                      <div
+                        key={`accepted-parent-${signup.id}`}
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          gap: 10,
+                          padding: "7px 0",
+                          borderBottom: "1px solid #ece8db",
+                        }}
+                      >
+                        <strong>{signup.child_name}</strong>
+                        <span
+                          style={{
+                            color: "#315d3e",
+                            fontSize: 11,
+                            fontWeight: 900,
+                          }}
+                        >
+                          DZIECKO • JEDZIE
+                        </span>
+                      </div>
+                    ))}
                 </div>
 
                 <div
@@ -8851,6 +9018,93 @@ export default function Home() {
                       ))
                   )}
                 </div>
+
+                {isAdmin &&
+                  parentSignupsForEvent(eventDetails.id).filter(
+                    (signup) => signup.status === "pending"
+                  ).length > 0 && (
+                    <div
+                      style={{
+                        marginTop: 14,
+                        display: "grid",
+                        gap: 7,
+                      }}
+                    >
+                      <strong>Zgłoszenia dzieci przez rodziców</strong>
+
+                      {parentSignupsForEvent(eventDetails.id)
+                        .filter(
+                          (signup) => signup.status === "pending"
+                        )
+                        .map((signup) => {
+                          const parent = people.find(
+                            (person) => person.id === signup.parent_id
+                          );
+
+                          return (
+                            <div
+                              key={`pending-parent-${signup.id}`}
+                              style={{
+                                ...cardStyle,
+                                boxShadow: "none",
+                                padding: 10,
+                                background: "white",
+                              }}
+                            >
+                              <strong>{signup.child_name}</strong>
+
+                              <div
+                                style={{
+                                  marginTop: 4,
+                                  fontSize: 12,
+                                  color: "#6c756f",
+                                }}
+                              >
+                                Rodzic:{" "}
+                                {parent?.full_name ||
+                                  parent?.name ||
+                                  "konto rodzica"}
+                              </div>
+
+                              <div
+                                style={{
+                                  display: "grid",
+                                  gridTemplateColumns: "1fr 1fr",
+                                  gap: 7,
+                                  marginTop: 8,
+                                }}
+                              >
+                                <button
+                                  style={secondaryStyle}
+                                  disabled={
+                                    signupSavingId ===
+                                    `parent-${signup.id}`
+                                  }
+                                  onClick={() =>
+                                    rejectParentEventSignup(signup)
+                                  }
+                                >
+                                  Odrzuć
+                                </button>
+
+                                <button
+                                  style={primaryStyle}
+                                  disabled={
+                                    signupSavingId ===
+                                    `parent-${signup.id}`
+                                  }
+                                  onClick={() =>
+                                    approveParentEventSignup(signup)
+                                  }
+                                >
+                                  Akceptuj
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  )}
 
                 {isAdmin &&
                   signupsForEvent(eventDetails.id).some(
@@ -9795,6 +10049,8 @@ function ParentApp({
   parentPatrols = [],
   parentChildRequests = [],
   loadParentChildRequests,
+  parentEventSignups = [],
+  loadParentEventSignups,
   reservations = [],
   membershipDues = [],
   announcements = [],
@@ -9807,18 +10063,13 @@ function ParentApp({
   disablePushNotifications,
 }) {
   const [tab, setTab] = useState("Moje");
-  const [selectedChildId, setSelectedChildId] = useState("");
-  const [childRequestName, setChildRequestName] = useState("");
-  const [childRequestSaving, setChildRequestSaving] = useState(false);
+  const [selectedEvent, setSelectedEvent] = useState(null);
+  const [parentSignupName, setParentSignupName] = useState("");
+  const [parentSignupSaving, setParentSignupSaving] = useState(false);
+  const [parentEventAnnouncements, setParentEventAnnouncements] = useState([]);
+  const [parentEventLoading, setParentEventLoading] = useState(false);
+
   const today = dateToString(new Date());
-
-  const childIds = parentChildren
-    .filter((link) => link.parent_id === currentUserId)
-    .map((link) => link.child_id);
-
-  const children = people.filter((person) =>
-    childIds.includes(person.id)
-  );
 
   const myParentPatrolIds = parentPatrols
     .filter((link) => link.parent_id === currentUserId)
@@ -9830,37 +10081,6 @@ function ParentApp({
     )
     .map((patrol) => patrol.name);
 
-  const myChildRequests = parentChildRequests.filter(
-    (item) => item.parent_id === currentUserId
-  );
-
-  useEffect(() => {
-    if (!selectedChildId && children[0]?.id) {
-      setSelectedChildId(children[0].id);
-    }
-
-    if (
-      selectedChildId &&
-      !children.some((child) => child.id === selectedChildId)
-    ) {
-      setSelectedChildId(children[0]?.id || "");
-    }
-  }, [children.map((child) => child.id).join("|"), selectedChildId]);
-
-  const child =
-    children.find((item) => item.id === selectedChildId) ||
-    children[0] ||
-    null;
-
-  const childMembership = child
-    ? memberships.find((item) => item.user_id === child.id)
-    : null;
-
-  const childPatrol = patrols.find(
-    (patrol) =>
-      Number(patrol.id) === Number(childMembership?.patrol_id)
-  );
-
   const allUpcomingEvents = events
     .filter((event) => event.event_date >= today)
     .sort((a, b) =>
@@ -9869,28 +10089,35 @@ function ParentApp({
       )
     );
 
-  const myParentEvents = allUpcomingEvents.filter((event) => {
+  const relevantEvents = allUpcomingEvents.filter((event) => {
     if (event.whole_troop) return true;
 
-    if (
+    return (
       event.patrol_id &&
       myParentPatrolIds.includes(Number(event.patrol_id))
-    ) {
-      return true;
-    }
-
-    return false;
-  });
-
-  const myParentAnnouncements = announcements.filter((item) => {
-    if (item.whole_troop) return true;
-
-    return (
-      item.patrol_id &&
-      myParentPatrolIds.includes(Number(item.patrol_id))
     );
   });
 
+  const relevantTrips = relevantEvents.filter((event) =>
+    isTripType(event.event_type)
+  );
+
+  const myParentAnnouncements = announcements
+    .filter((item) => {
+      if (item.expires_at && item.expires_at < today) return false;
+      if (item.parents_only) return true;
+      if (item.whole_troop) return true;
+
+      return (
+        item.patrol_id &&
+        myParentPatrolIds.includes(Number(item.patrol_id))
+      );
+    })
+    .sort((a, b) => {
+      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+      if (a.important !== b.important) return a.important ? -1 : 1;
+      return String(b.created_at).localeCompare(String(a.created_at));
+    });
 
   const myParentReservations = reservations
     .filter(
@@ -9905,74 +10132,9 @@ function ParentApp({
       )
     );
 
-  const childAssignments = child
-    ? eventAssignments.filter(
-        (assignment) => assignment.user_id === child.id
-      )
-    : [];
-
-  const assignedEventIds = new Set(
-    childAssignments.map((assignment) =>
-      Number(assignment.event_id)
-    )
+  const myParentEventSignups = parentEventSignups.filter(
+    (item) => item.parent_id === currentUserId
   );
-
-  const childTrips = child
-    ? allUpcomingEvents.filter(
-        (event) =>
-          isTripType(event.event_type) &&
-          assignedEventIds.has(Number(event.id))
-      )
-    : [];
-
-  function childDue(year, quarter) {
-    if (!child) return null;
-
-    return membershipDues.find(
-      (item) =>
-        item.user_id === child.id &&
-        Number(item.due_year) === Number(year) &&
-        Number(item.due_quarter) === Number(quarter)
-    );
-  }
-
-  async function submitChildRequest() {
-    const cleanName = childRequestName.trim();
-
-    if (cleanName.length < 3) {
-      alert("Wpisz imię i nazwisko dziecka.");
-      return;
-    }
-
-    setChildRequestSaving(true);
-
-    try {
-      const { error } = await supabase
-        .from("parent_child_requests")
-        .insert({
-          parent_id: currentUserId,
-          child_name: cleanName,
-          status: "pending",
-        });
-
-      if (error) throw error;
-
-      setChildRequestName("");
-
-      if (loadParentChildRequests) {
-        await loadParentChildRequests();
-      }
-
-      alert("Dziecko zostało zgłoszone.");
-    } catch (error) {
-      console.error("Błąd zgłoszenia dziecka:", error);
-      alert(
-        `Nie udało się zgłosić dziecka.\n\n${error?.message || ""}`
-      );
-    } finally {
-      setChildRequestSaving(false);
-    }
-  }
 
   function eventAudienceLabel(event) {
     if (event.whole_troop) return "CAŁA DRUŻYNA";
@@ -9990,6 +10152,136 @@ function ParentApp({
       : formatDate(event.event_date);
   }
 
+  function parentSignupStatusLabel(status) {
+    if (status === "approved") return "ZATWIERDZONE";
+    if (status === "rejected") return "ODRZUCONE";
+    return "OCZEKUJE";
+  }
+
+  async function openParentEvent(event) {
+    setSelectedEvent(event);
+    setParentSignupName("");
+    setParentEventAnnouncements([]);
+    setParentEventLoading(true);
+
+    try {
+      const { data, error } = await supabase
+        .from("event_announcements")
+        .select(
+          "id,event_id,user_id,title,body,pinned,created_at,updated_at"
+        )
+        .eq("event_id", event.id)
+        .order("pinned", { ascending: false })
+        .order("created_at", { ascending: false });
+
+      if (error) {
+        console.warn(
+          "Nie udało się pobrać ogłoszeń wydarzenia dla rodzica:",
+          error
+        );
+      } else {
+        setParentEventAnnouncements(data || []);
+      }
+    } finally {
+      setParentEventLoading(false);
+    }
+  }
+
+  async function submitChildToEvent(event) {
+    const childName = parentSignupName.trim();
+
+    if (!event?.id || !childName) {
+      alert("Wpisz imię i nazwisko dziecka.");
+      return;
+    }
+
+    if (!event.signup_enabled) {
+      alert("Zgłoszenia na to wydarzenie są zamknięte.");
+      return;
+    }
+
+    if (
+      event.signup_deadline &&
+      event.signup_deadline < today
+    ) {
+      alert("Termin zgłoszeń na to wydarzenie już minął.");
+      return;
+    }
+
+    setParentSignupSaving(true);
+
+    try {
+      const { error } = await supabase
+        .from("parent_event_signups")
+        .upsert(
+          {
+            event_id: event.id,
+            parent_id: currentUserId,
+            child_name: childName,
+            status: "pending",
+            admin_note: null,
+            reviewed_by: null,
+            reviewed_at: null,
+            updated_at: new Date().toISOString(),
+          },
+          {
+            onConflict: "event_id,parent_id,child_name",
+          }
+        );
+
+      if (error) throw error;
+
+      setParentSignupName("");
+
+      if (loadParentEventSignups) {
+        await loadParentEventSignups();
+      }
+
+      alert("Zgłoszenie dziecka zostało wysłane do akceptacji.");
+    } catch (error) {
+      console.error("Błąd zgłoszenia dziecka:", error);
+      alert(
+        `Nie udało się zgłosić dziecka.\n\n${error?.message || ""}`
+      );
+    } finally {
+      setParentSignupSaving(false);
+    }
+  }
+
+  async function withdrawChildSignup(signup) {
+    if (!signup?.id) return;
+
+    if (
+      !window.confirm(
+        `Wycofać zgłoszenie dziecka: ${signup.child_name}?`
+      )
+    ) {
+      return;
+    }
+
+    const { error } = await supabase
+      .from("parent_event_signups")
+      .delete()
+      .eq("id", signup.id)
+      .eq("parent_id", currentUserId);
+
+    if (error) {
+      alert(
+        `Nie udało się wycofać zgłoszenia.\n\n${error.message}`
+      );
+      return;
+    }
+
+    if (loadParentEventSignups) {
+      await loadParentEventSignups();
+    }
+  }
+
+  const nextImportantAnnouncement =
+    myParentAnnouncements.find((item) => item.pinned) ||
+    myParentAnnouncements.find((item) => item.important) ||
+    null;
+
   return (
     <main style={appStyle}>
       <AppHeader subtitle="Strefa rodzica" logout={logout} />
@@ -9998,7 +10290,38 @@ function ParentApp({
         {tab === "Moje" && (
           <>
             <div style={eyebrowStyle}>Panel rodzica</div>
-            <h2 style={{ marginTop: 5 }}>Najbliższe terminy</h2>
+            <h2 style={{ marginTop: 5 }}>Co, gdzie i kiedy?</h2>
+
+            {nextImportantAnnouncement && (
+              <div
+                style={{
+                  ...cardStyle,
+                  marginBottom: 14,
+                  background: "#fff7e3",
+                  borderLeft: "5px solid #b98a2f",
+                }}
+              >
+                <div style={eyebrowStyle}>
+                  {nextImportantAnnouncement.important
+                    ? "WAŻNE OGŁOSZENIE"
+                    : "OGŁOSZENIE"}
+                </div>
+
+                <h3 style={{ margin: "6px 0" }}>
+                  {nextImportantAnnouncement.title}
+                </h3>
+
+                <div
+                  style={{
+                    color: "#5f665f",
+                    lineHeight: 1.55,
+                    whiteSpace: "pre-wrap",
+                  }}
+                >
+                  {nextImportantAnnouncement.body}
+                </div>
+              </div>
+            )}
 
             <div
               style={{
@@ -10008,7 +10331,7 @@ function ParentApp({
                 boxShadow: "none",
               }}
             >
-              <strong>Co widzisz tutaj?</strong>
+              <strong>Przypisane zastępy</strong>
               <div
                 style={{
                   marginTop: 6,
@@ -10016,10 +10339,9 @@ function ParentApp({
                   lineHeight: 1.55,
                 }}
               >
-                Zbiórki i wydarzenia całej drużyny
                 {myParentPatrolNames.length
-                  ? ` oraz zastępów: ${myParentPatrolNames.join(", ")}.`
-                  : ". Nie masz jeszcze przypisanego zastępu, więc w kalendarzu znajdziesz wszystkie wydarzenia."}
+                  ? myParentPatrolNames.join(", ")
+                  : "Brak przypisanego zastępu. W kalendarzu nadal zobaczysz wydarzenia drużyny."}
               </div>
             </div>
 
@@ -10035,7 +10357,7 @@ function ParentApp({
               >
                 <strong>🔔 Włącz powiadomienia</strong>
                 <p style={{ color: "#68736d", lineHeight: 1.5 }}>
-                  Dostaniesz informacje o zmianach i ważnych terminach.
+                  Dostaniesz ważne informacje o wydarzeniach i zmianach.
                 </p>
                 <button
                   style={primaryStyle}
@@ -10056,31 +10378,27 @@ function ParentApp({
                 }}
               >
                 <strong>🔔 Powiadomienia włączone</strong>
-                <button
-                  style={{
-                    ...secondaryStyle,
-                    display: "block",
-                    marginTop: 10,
-                  }}
-                  onClick={disablePushNotifications}
-                >
-                  Wyłącz na tym urządzeniu
-                </button>
               </div>
             )}
 
-            {myParentEvents.length === 0 ? (
+            <h3>Najbliższe wydarzenia</h3>
+
+            {relevantEvents.length === 0 ? (
               <div style={{ ...cardStyle, color: "#68736d" }}>
-                Brak nadchodzących wydarzeń dla drużyny lub przypisanego zastępu.
+                Brak nadchodzących wydarzeń.
               </div>
             ) : (
               <div style={{ display: "grid", gap: 10 }}>
-                {myParentEvents.slice(0, 6).map((event) => (
-                  <div
+                {relevantEvents.slice(0, 6).map((event) => (
+                  <button
                     key={`parent-home-event-${event.id}`}
+                    onClick={() => openParentEvent(event)}
                     style={{
                       ...cardStyle,
+                      border: 0,
                       borderLeft: "5px solid #607b54",
+                      textAlign: "left",
+                      cursor: "pointer",
                     }}
                   >
                     <div style={eyebrowStyle}>
@@ -10105,7 +10423,7 @@ function ParentApp({
                       <br />
                       📍 {event.location}
                     </div>
-                  </div>
+                  </button>
                 ))}
               </div>
             )}
@@ -10118,167 +10436,6 @@ function ParentApp({
                   {myParentReservations.slice(0, 8).map((item) => (
                     <div
                       key={`parent-reservation-${item.id}`}
-                      style={{
-                        ...cardStyle,
-                        borderLeft: "5px solid #607b54",
-                      }}
-                    >
-                      <div style={eyebrowStyle}>ZBIÓRKA • {item.patrol}</div>
-
-                      <div
-                        style={{
-                          marginTop: 6,
-                          color: "#59675f",
-                          lineHeight: 1.65,
-                        }}
-                      >
-                        📅 {formatDate(item.date)}
-                        <br />
-                        🕐 {item.time}
-                        {item.endTime ? `–${item.endTime}` : ""}
-                        <br />
-                        📍 {item.location}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-
-            {myParentAnnouncements.length > 0 && (
-              <>
-                <h3 style={{ marginTop: 20 }}>Ogłoszenia</h3>
-                <div style={{ display: "grid", gap: 10 }}>
-                  {myParentAnnouncements.slice(0, 5).map((item) => (
-                    <div
-                      key={`parent-ann-${item.id}`}
-                      style={{
-                        ...cardStyle,
-                        borderLeft: item.important
-                          ? "5px solid #8b2635"
-                          : "5px solid #b98a2f",
-                      }}
-                    >
-                      <strong>{item.title}</strong>
-                      <p
-                        style={{
-                          marginBottom: 0,
-                          color: "#5d6962",
-                          lineHeight: 1.55,
-                        }}
-                      >
-                        {item.body}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-
-            {child && childTrips.length > 0 && (
-              <>
-                <h3 style={{ marginTop: 20 }}>Wyjazdy dziecka</h3>
-                <div style={{ display: "grid", gap: 10 }}>
-                  {childTrips.map((event) => (
-                    <div
-                      key={`parent-child-trip-${event.id}`}
-                      style={{
-                        ...cardStyle,
-                        borderLeft: "5px solid #315d3e",
-                      }}
-                    >
-                      <div style={eyebrowStyle}>✓ DZIECKO NA LIŚCIE</div>
-                      <strong>{event.title}</strong>
-                      <div
-                        style={{
-                          marginTop: 6,
-                          color: "#59675f",
-                          lineHeight: 1.55,
-                        }}
-                      >
-                        {eventDateText(event)} • {event.location}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-          </>
-        )}
-
-        {tab === "Kalendarz" && (
-          <>
-            <div style={eyebrowStyle}>Wszystkie terminy</div>
-            <h2 style={{ marginTop: 5 }}>Kalendarz drużyny</h2>
-
-            <div
-              style={{
-                ...cardStyle,
-                background: "#f7f5ee",
-                boxShadow: "none",
-                marginBottom: 12,
-                color: "#657169",
-                lineHeight: 1.55,
-              }}
-            >
-              Tutaj są wszystkie nadchodzące zbiórki i wydarzenia drużyny,
-              nawet jeśli dziecko nie ma jeszcze własnego konta.
-            </div>
-
-            {allUpcomingEvents.length === 0 ? (
-              <div style={{ ...cardStyle, color: "#68736d" }}>
-                Brak nadchodzących terminów.
-              </div>
-            ) : (
-              <div style={{ display: "grid", gap: 9 }}>
-                {allUpcomingEvents.map((event) => (
-                  <div
-                    key={`parent-calendar-${event.id}`}
-                    style={cardStyle}
-                  >
-                    <div style={eyebrowStyle}>
-                      {eventAudienceLabel(event)}
-                    </div>
-                    <strong>{event.title}</strong>
-
-                    <div
-                      style={{
-                        marginTop: 5,
-                        color: "#627068",
-                        lineHeight: 1.55,
-                      }}
-                    >
-                      📅 {eventDateText(event)}
-                      {(event.start_time || event.end_time) && (
-                        <>
-                          <br />
-                          🕐{" "}
-                          {event.start_time
-                            ? normalizeTime(event.start_time)
-                            : ""}
-                          {event.end_time
-                            ? `–${normalizeTime(event.end_time)}`
-                            : ""}
-                        </>
-                      )}
-                      <br />
-                      📍 {event.location}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {myParentReservations.length > 0 && (
-              <>
-                <h3 style={{ marginTop: 20 }}>
-                  Zbiórki przypisanych zastępów
-                </h3>
-
-                <div style={{ display: "grid", gap: 9 }}>
-                  {myParentReservations.map((item) => (
-                    <div
-                      key={`parent-calendar-res-${item.id}`}
                       style={{
                         ...cardStyle,
                         borderLeft: "5px solid #607b54",
@@ -10310,191 +10467,264 @@ function ParentApp({
           </>
         )}
 
-        {tab === "Dziecko" && (
+        {tab === "Kalendarz" && (
           <>
-            <div style={eyebrowStyle}>Dane dziecka</div>
-            <h2 style={{ marginTop: 5 }}>Moje dziecko</h2>
-
-            {children.length > 0 && (
-              <label
-                style={{
-                  display: "block",
-                  marginBottom: 14,
-                }}
-              >
-                <strong>Przypisane konto dziecka</strong>
-                <select
-                  value={child?.id || ""}
-                  onChange={(event) =>
-                    setSelectedChildId(event.target.value)
-                  }
-                  style={inputStyle}
-                >
-                  {children.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.full_name || item.name || "Harcerz"}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-
-            {child ? (
-              <>
-                <div
-                  style={{
-                    ...cardStyle,
-                    marginBottom: 14,
-                  }}
-                >
-                  <strong>
-                    {child.full_name || child.name || "Harcerz"}
-                  </strong>
-                  <div style={{ marginTop: 7, lineHeight: 1.7 }}>
-                    Zastęp: {childPatrol?.name || "brak przypisania"}
-                    <br />
-                    Numer ewidencji: {child.membership_number || "—"}
-                  </div>
-                </div>
-
-                <div style={eyebrowStyle}>Składki dziecka</div>
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "1fr 1fr",
-                    gap: 9,
-                    marginTop: 8,
-                  }}
-                >
-                  {[1, 2, 3, 4].map((quarter) => {
-                    const due = childDue(
-                      new Date().getFullYear(),
-                      quarter
-                    );
-
-                    return (
-                      <div
-                        key={`parent-child-due-${quarter}`}
-                        style={{
-                          ...cardStyle,
-                          boxShadow: "none",
-                          background: due?.paid
-                            ? "#f1f7f2"
-                            : "#fff8f8",
-                          border: due?.paid
-                            ? "1px solid #a9bbaa"
-                            : "1px solid #e1d0d2",
-                        }}
-                      >
-                        <strong>{quarterLabel(quarter)}</strong>
-                        <div
-                          style={{
-                            marginTop: 6,
-                            fontSize: 12,
-                            fontWeight: 900,
-                            color: due?.paid
-                              ? "#315d3e"
-                              : "#8b2635",
-                          }}
-                        >
-                          {due?.paid ? "OPŁACONA" : "NIEOPŁACONA"}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </>
-            ) : (
-              <div
-                style={{
-                  ...cardStyle,
-                  color: "#68736d",
-                  marginBottom: 14,
-                }}
-              >
-                Dziecko nie ma jeszcze konta przypisanego do tego rodzica.
-                To nie blokuje kalendarza ani informacji o wydarzeniach.
-              </div>
-            )}
+            <div style={eyebrowStyle}>Terminy drużyny</div>
+            <h2 style={{ marginTop: 5 }}>Kalendarz</h2>
 
             <div
               style={{
                 ...cardStyle,
-                marginTop: 16,
                 background: "#f7f5ee",
                 boxShadow: "none",
+                marginBottom: 12,
+                color: "#657169",
+                lineHeight: 1.55,
               }}
             >
-              <strong>➕ Zgłoś dziecko</strong>
-              <p
-                style={{
-                  color: "#667169",
-                  lineHeight: 1.5,
-                  marginBottom: 8,
-                }}
-              >
-                Jeśli dziecko nie ma jeszcze konta w aplikacji, wpisz jego
-                imię i nazwisko. Ta opcja jest dostępna tylko dla rodziców.
-              </p>
+              Tu są wszystkie wydarzenia drużyny. Zbiórki z Grafiku
+              pokazujemy dla zastępów przypisanych do Twojego konta.
+            </div>
 
-              <input
-                value={childRequestName}
-                onChange={(event) =>
-                  setChildRequestName(event.target.value)
-                }
-                placeholder="Imię i nazwisko dziecka"
-                style={inputStyle}
-              />
-
-              <button
-                style={{
-                  ...primaryStyle,
-                  marginTop: 9,
-                }}
-                disabled={childRequestSaving}
-                onClick={submitChildRequest}
-              >
-                {childRequestSaving
-                  ? "Zgłaszam..."
-                  : "Zgłoś dziecko"}
-              </button>
-
-              {myChildRequests.length > 0 && (
-                <div
+            <div style={{ display: "grid", gap: 9 }}>
+              {allUpcomingEvents.map((event) => (
+                <button
+                  key={`parent-calendar-${event.id}`}
+                  onClick={() => openParentEvent(event)}
                   style={{
-                    marginTop: 12,
-                    borderTop: "1px solid #dde1dd",
-                    paddingTop: 10,
+                    ...cardStyle,
+                    border: 0,
+                    textAlign: "left",
+                    cursor: "pointer",
                   }}
                 >
-                  <strong style={{ fontSize: 12 }}>
-                    Zgłoszone dzieci
-                  </strong>
+                  <div style={eyebrowStyle}>
+                    {eventAudienceLabel(event)}
+                  </div>
+                  <strong>{event.title}</strong>
 
-                  {myChildRequests.map((item) => (
+                  <div
+                    style={{
+                      marginTop: 5,
+                      color: "#627068",
+                      lineHeight: 1.55,
+                    }}
+                  >
+                    📅 {eventDateText(event)}
+                    {(event.start_time || event.end_time) && (
+                      <>
+                        <br />
+                        🕐{" "}
+                        {event.start_time
+                          ? normalizeTime(event.start_time)
+                          : ""}
+                        {event.end_time
+                          ? `–${normalizeTime(event.end_time)}`
+                          : ""}
+                      </>
+                    )}
+                    <br />
+                    📍 {event.location}
+                  </div>
+                </button>
+              ))}
+
+              {myParentReservations.map((item) => (
+                <div
+                  key={`parent-calendar-res-${item.id}`}
+                  style={{
+                    ...cardStyle,
+                    borderLeft: "5px solid #607b54",
+                  }}
+                >
+                  <div style={eyebrowStyle}>
+                    ZBIÓRKA • {item.patrol}
+                  </div>
+
+                  <div
+                    style={{
+                      marginTop: 6,
+                      color: "#59675f",
+                      lineHeight: 1.65,
+                    }}
+                  >
+                    📅 {formatDate(item.date)}
+                    <br />
+                    🕐 {item.time}
+                    {item.endTime ? `–${item.endTime}` : ""}
+                    <br />
+                    📍 {item.location}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {tab === "Wyjazdy" && (
+          <>
+            <div style={eyebrowStyle}>Biwaki, rajdy i wyjazdy</div>
+            <h2 style={{ marginTop: 5 }}>Wyjazdy</h2>
+
+            {relevantTrips.length === 0 ? (
+              <div style={{ ...cardStyle, color: "#68736d" }}>
+                Brak nadchodzących wyjazdów.
+              </div>
+            ) : (
+              <div style={{ display: "grid", gap: 10 }}>
+                {relevantTrips.map((event) => {
+                  const mySignups = myParentEventSignups.filter(
+                    (item) => Number(item.event_id) === Number(event.id)
+                  );
+
+                  return (
                     <div
-                      key={`child-request-${item.id}`}
+                      key={`parent-trip-${event.id}`}
                       style={{
-                        marginTop: 6,
-                        fontSize: 12,
-                        color: "#667169",
+                        ...cardStyle,
+                        borderLeft: "5px solid #8b2635",
                       }}
                     >
-                      {item.child_name} •{" "}
-                      {item.status === "linked"
-                        ? "przypisane"
-                        : "oczekuje na przypisanie"}
+                      <div style={eyebrowStyle}>
+                        {event.event_type?.toUpperCase()}
+                      </div>
+
+                      <h3 style={{ margin: "6px 0" }}>{event.title}</h3>
+
+                      <div
+                        style={{
+                          color: "#59675f",
+                          lineHeight: 1.6,
+                        }}
+                      >
+                        📅 {eventDateText(event)}
+                        <br />
+                        📍 {event.location}
+                      </div>
+
+                      {mySignups.length > 0 && (
+                        <div
+                          style={{
+                            marginTop: 10,
+                            display: "grid",
+                            gap: 6,
+                          }}
+                        >
+                          {mySignups.map((signup) => (
+                            <div
+                              key={`parent-own-signup-${signup.id}`}
+                              style={{
+                                background: "#f7f5ee",
+                                borderRadius: 12,
+                                padding: 9,
+                              }}
+                            >
+                              <strong>{signup.child_name}</strong>
+                              <div
+                                style={{
+                                  fontSize: 11,
+                                  fontWeight: 900,
+                                  marginTop: 3,
+                                  color:
+                                    signup.status === "approved"
+                                      ? "#315d3e"
+                                      : signup.status === "rejected"
+                                      ? "#8b2635"
+                                      : "#715818",
+                                }}
+                              >
+                                {parentSignupStatusLabel(signup.status)}
+                              </div>
+
+                              {signup.status === "pending" && (
+                                <button
+                                  style={{
+                                    ...secondaryStyle,
+                                    marginTop: 7,
+                                  }}
+                                  onClick={() =>
+                                    withdrawChildSignup(signup)
+                                  }
+                                >
+                                  Wycofaj
+                                </button>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      <button
+                        style={{
+                          ...primaryStyle,
+                          marginTop: 10,
+                        }}
+                        onClick={() => openParentEvent(event)}
+                      >
+                        {event.signup_enabled
+                          ? "Zgłoś dziecko / szczegóły"
+                          : "Zobacz szczegóły"}
+                      </button>
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        )}
+
+        {tab === "Ogłoszenia" && (
+          <>
+            <div style={eyebrowStyle}>Komunikaty</div>
+            <h2 style={{ marginTop: 5 }}>Ogłoszenia</h2>
+
+            {myParentAnnouncements.length === 0 ? (
+              <div style={{ ...cardStyle, color: "#68736d" }}>
+                Brak aktualnych ogłoszeń.
+              </div>
+            ) : (
+              <div style={{ display: "grid", gap: 10 }}>
+                {myParentAnnouncements.map((item) => (
+                  <div
+                    key={`parent-announcement-${item.id}`}
+                    style={{
+                      ...cardStyle,
+                      borderLeft: item.important
+                        ? "5px solid #8b2635"
+                        : item.parents_only
+                        ? "5px solid #b98a2f"
+                        : "5px solid #607b54",
+                    }}
+                  >
+                    <div style={eyebrowStyle}>
+                      {item.parents_only
+                        ? "DLA RODZICÓW"
+                        : item.patrol_id
+                        ? "ZASTĘP"
+                        : "DRUŻYNA"}
+                    </div>
+
+                    <h3 style={{ margin: "6px 0" }}>{item.title}</h3>
+
+                    <div
+                      style={{
+                        color: "#5d6962",
+                        lineHeight: 1.55,
+                        whiteSpace: "pre-wrap",
+                      }}
+                    >
+                      {item.body}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </>
         )}
 
         {tab === "Dokumenty" && (
           <>
-            <div style={eyebrowStyle}>Pliki dla rodziców</div>
+            <div style={eyebrowStyle}>Zgody i pliki</div>
             <h2 style={{ marginTop: 5 }}>Dokumenty</h2>
 
             {documents.length === 0 ? (
@@ -10536,10 +10766,295 @@ function ParentApp({
       </section>
 
       <BottomNav
-        tabs={["Moje", "Kalendarz", "Dziecko", "Dokumenty"]}
+        tabs={["Moje", "Kalendarz", "Wyjazdy", "Ogłoszenia", "Dokumenty"]}
         activeTab={tab}
         setActiveTab={setTab}
       />
+
+      {selectedEvent && (
+        <ModalBackground
+          close={() => {
+            setSelectedEvent(null);
+            setParentSignupName("");
+            setParentEventAnnouncements([]);
+          }}
+        >
+          <div style={eyebrowStyle}>
+            {eventAudienceLabel(selectedEvent)}
+          </div>
+
+          <h2 style={{ marginTop: 5 }}>{selectedEvent.title}</h2>
+
+          <div
+            style={{
+              color: "#59675f",
+              lineHeight: 1.7,
+            }}
+          >
+            📅 {eventDateText(selectedEvent)}
+            {(selectedEvent.start_time || selectedEvent.end_time) && (
+              <>
+                <br />
+                🕐{" "}
+                {selectedEvent.start_time
+                  ? normalizeTime(selectedEvent.start_time)
+                  : ""}
+                {selectedEvent.end_time
+                  ? `–${normalizeTime(selectedEvent.end_time)}`
+                  : ""}
+              </>
+            )}
+            <br />
+            📍 {selectedEvent.location}
+          </div>
+
+          {selectedEvent.description && (
+            <div
+              style={{
+                ...cardStyle,
+                boxShadow: "none",
+                marginTop: 12,
+                whiteSpace: "pre-wrap",
+                lineHeight: 1.55,
+              }}
+            >
+              {selectedEvent.description}
+            </div>
+          )}
+
+          {selectedEvent.what_to_bring && (
+            <div
+              style={{
+                ...cardStyle,
+                boxShadow: "none",
+                marginTop: 10,
+                background: "#f7f5ee",
+              }}
+            >
+              <strong>🎒 Co zabrać?</strong>
+              <div
+                style={{
+                  marginTop: 6,
+                  whiteSpace: "pre-wrap",
+                  lineHeight: 1.55,
+                }}
+              >
+                {selectedEvent.what_to_bring}
+              </div>
+            </div>
+          )}
+
+          {parentEventLoading ? (
+            <div style={{ marginTop: 12, color: "#68736d" }}>
+              Ładuję ogłoszenia wydarzenia...
+            </div>
+          ) : parentEventAnnouncements.length > 0 ? (
+            <div
+              style={{
+                ...cardStyle,
+                boxShadow: "none",
+                marginTop: 12,
+                background: "#fffaf0",
+              }}
+            >
+              <strong>📣 Ogłoszenia wydarzenia</strong>
+
+              <div
+                style={{
+                  display: "grid",
+                  gap: 9,
+                  marginTop: 9,
+                }}
+              >
+                {parentEventAnnouncements.map((item) => (
+                  <div
+                    key={`parent-event-ann-${item.id}`}
+                    style={{
+                      borderTop: "1px solid #eadfca",
+                      paddingTop: 8,
+                    }}
+                  >
+                    <strong>{item.title}</strong>
+                    <div
+                      style={{
+                        marginTop: 4,
+                        color: "#646d67",
+                        whiteSpace: "pre-wrap",
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      {item.body}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {isTripType(selectedEvent.event_type) && (
+            <div
+              style={{
+                ...cardStyle,
+                boxShadow: "none",
+                marginTop: 12,
+                background: "#fffaf0",
+                border: "1px solid #ead8a7",
+              }}
+            >
+              <div style={eyebrowStyle}>ZGŁOSZENIA</div>
+
+              {!selectedEvent.signup_enabled ? (
+                <div
+                  style={{
+                    marginTop: 8,
+                    color: "#8b2635",
+                    fontWeight: 800,
+                  }}
+                >
+                  Zgłoszenia są obecnie zamknięte.
+                </div>
+              ) : selectedEvent.signup_deadline &&
+                selectedEvent.signup_deadline < today ? (
+                <div
+                  style={{
+                    marginTop: 8,
+                    color: "#8b2635",
+                    fontWeight: 800,
+                  }}
+                >
+                  Termin zgłoszeń już minął.
+                </div>
+              ) : (
+                <>
+                  <div
+                    style={{
+                      marginTop: 8,
+                      color: "#5f665f",
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    Zamiast zgłaszać swoje konto, wpisz imię i nazwisko
+                    dziecka.
+                  </div>
+
+                  <input
+                    value={parentSignupName}
+                    onChange={(event) =>
+                      setParentSignupName(event.target.value)
+                    }
+                    placeholder="Imię i nazwisko dziecka"
+                    style={{
+                      ...inputStyle,
+                      marginTop: 9,
+                    }}
+                  />
+
+                  <button
+                    style={{
+                      ...primaryStyle,
+                      marginTop: 9,
+                    }}
+                    disabled={parentSignupSaving}
+                    onClick={() =>
+                      submitChildToEvent(selectedEvent)
+                    }
+                  >
+                    {parentSignupSaving
+                      ? "Zgłaszam..."
+                      : "Zgłoś dziecko"}
+                  </button>
+                </>
+              )}
+
+              {myParentEventSignups.filter(
+                (item) =>
+                  Number(item.event_id) === Number(selectedEvent.id)
+              ).length > 0 && (
+                <div
+                  style={{
+                    marginTop: 14,
+                    display: "grid",
+                    gap: 7,
+                  }}
+                >
+                  <strong>Twoje zgłoszenia</strong>
+
+                  {myParentEventSignups
+                    .filter(
+                      (item) =>
+                        Number(item.event_id) ===
+                        Number(selectedEvent.id)
+                    )
+                    .map((signup) => (
+                      <div
+                        key={`parent-modal-signup-${signup.id}`}
+                        style={{
+                          background: "white",
+                          borderRadius: 12,
+                          padding: 9,
+                        }}
+                      >
+                        <strong>{signup.child_name}</strong>
+                        <div
+                          style={{
+                            marginTop: 3,
+                            fontSize: 11,
+                            fontWeight: 900,
+                            color:
+                              signup.status === "approved"
+                                ? "#315d3e"
+                                : signup.status === "rejected"
+                                ? "#8b2635"
+                                : "#715818",
+                          }}
+                        >
+                          {parentSignupStatusLabel(signup.status)}
+                        </div>
+
+                        {signup.admin_note && (
+                          <div
+                            style={{
+                              marginTop: 4,
+                              fontSize: 12,
+                              color: "#6c756f",
+                            }}
+                          >
+                            {signup.admin_note}
+                          </div>
+                        )}
+
+                        {signup.status === "pending" && (
+                          <button
+                            style={{
+                              ...secondaryStyle,
+                              marginTop: 7,
+                            }}
+                            onClick={() =>
+                              withdrawChildSignup(signup)
+                            }
+                          >
+                            Wycofaj
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          <button
+            style={{
+              ...secondaryStyle,
+              width: "100%",
+              marginTop: 12,
+            }}
+            onClick={() => setSelectedEvent(null)}
+          >
+            Zamknij
+          </button>
+        </ModalBackground>
+      )}
     </main>
   );
 }
