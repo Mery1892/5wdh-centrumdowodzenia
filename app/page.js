@@ -1440,32 +1440,23 @@ export default function Home() {
     setSignupSavingId(eventItem.id);
 
     try {
-      const existing = mySignupForEvent(eventItem.id);
-
-      if (existing?.id) {
-        const { error: updateError } = await supabase
-          .from("event_signups")
-          .update({
+      const { error: signupError } = await supabase
+        .from("event_signups")
+        .upsert(
+          {
+            event_id: eventItem.id,
+            user_id: session.user.id,
             status: "pending",
             admin_note: null,
             reviewed_by: null,
             reviewed_at: null,
-          })
-          .eq("id", existing.id)
-          .eq("user_id", session.user.id);
+          },
+          {
+            onConflict: "event_id,user_id",
+          }
+        );
 
-        if (updateError) throw updateError;
-      } else {
-        const { error: insertError } = await supabase
-          .from("event_signups")
-          .insert({
-            event_id: eventItem.id,
-            user_id: session.user.id,
-            status: "pending",
-          });
-
-        if (insertError) throw insertError;
-      }
+      if (signupError) throw signupError;
 
       await loadEvents();
 
